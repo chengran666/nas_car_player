@@ -92,4 +92,13 @@ class MainActivity: FlutterActivity() {
         mediaSession.release()
         super.onDestroy()
     }
+
+    // 💡 侦察机：拦截一切到达当前画面的硬件按键，并弹窗显示键码！
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            // 在屏幕上打印出按下的键码
+            android.widget.Toast.makeText(this, "侦测到物理按键，键码: ${event.keyCode}", android.widget.Toast.LENGTH_SHORT).show()
+        }
+        return super.dispatchKeyEvent(event)
+    }
 }

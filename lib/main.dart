@@ -70,19 +70,18 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   Map<String, dynamic>? activeAccount;
   Map<String, dynamic>? playingAccount;
 
-  double _uiScale = 1.3;
-  double _btnScale = 1.0;
-  double _lyricOffset = 0.0;
+  double _uiScale = 1.3, _btnScale = 1.0, _lyricOffset = 0.0;
 
-  // 💡 定义与 Android 底层通讯的专属通道
   static const platform = MethodChannel('com.nascarplayer/app_retain');
   double s(double value) => value * _uiScale;
 
   double _lyricFontSize = 50.0, _maxCacheGB = 2.0;
-  int _screenSaverTimeout = 8;
-  bool _autoPlay = false, _showStatusBar = false;
-  bool _startOnBoot = false; // 💡 新增：开机启动开关
-  int _bootDelay = 5; // 💡 默认自启延迟 5 秒
+  int _screenSaverTimeout = 8, _bootDelay = 5;
+  bool _autoPlay = false, _showStatusBar = false, _startOnBoot = false;
+
+  // 💡 双轨制按键绑定变量：存字符串，兼容普通键码和车机原生信号
+  String _triggerNext = "", _triggerPrev = "", _triggerPlayPause = "";
+  String? _currentlyBindingAction; // 记录当前正在绑定哪个功能 ('next', 'prev', 'playPause')
 
   @override
   void initState() {
@@ -93,20 +92,35 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _spinController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _spinController.stop();
 
-    // 💡 核心手术：监听来自 Android 底层 MediaSession 传来的方向盘指令！
+    // 💡 1. 开启全局键盘监听（负责捕捉标准外接键盘、普通蓝牙方控信号）
+    HardwareKeyboard.instance.addHandler(_handleGlobalKey);
+
+    // 💡 2. 核心手术：监听来自 Android 底层传来的原生车机信号/媒体键
     platform.setMethodCallHandler((call) async {
       if (call.method == "onMediaButton") {
         String action = call.arguments.toString();
+        String triggerTag = "N_$action"; // 💡 N 代表 Native 原生信号
+
+        // 🔥 如果用户正在“绑定界面”，截获信号，自动关闭弹窗！
+        if (_currentlyBindingAction != null) {
+          _saveBinding(_currentlyBindingAction!, triggerTag);
+          return;
+        }
+
+        // 💡 正常播放时：优先执行自定义绑定的功能
+        if (_executeCustomBinding(triggerTag)) return;
+
+        // 如果没有自定义绑定，走兜底默认行为
         if (action == "next") {
           _playNextSong(manual: true); _resetScreenSaverTimer();
         } else if (action == "prev") {
           _playPrevSong(); _resetScreenSaverTimer();
         } else if (action == "play_pause") {
-          _player.playOrPause(); _resetScreenSaverTimer(); // 85键专属：智能切换
+          _player.playOrPause(); _resetScreenSaverTimer();
         } else if (action == "play") {
-          _player.play(); _resetScreenSaverTimer(); // 明确指令：只许播放
+          _player.play(); _resetScreenSaverTimer();
         } else if (action == "pause") {
-          _player.pause(); _resetScreenSaverTimer(); // 明确指令：只许暂停
+          _player.pause(); _resetScreenSaverTimer();
         }
       }
     });
@@ -115,7 +129,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       if (mounted) {
         setState(() => isPlaying = p);
         if (p) _spinController.repeat(); else _spinController.stop();
-        // 💡 核心手术：将播放状态同步回报给系统底层，确保后台 MediaSession 永远存活！
         platform.invokeMethod('updatePlaybackState', p);
       }
     });
@@ -125,12 +138,59 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _player.stream.completed.listen((c) { if (c) _playNextSong(manual: false); });
   }
 
-  // 👇 下面的方法全都是经过优化的最新版，直接覆盖无忧
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKey); // 💡 关闭按键雷达
+    _playbackSaveTimer?.cancel();
+    _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
+    _spinController.dispose(); _player.dispose(); super.dispose();
+  }
+
+  // ================= 💡 双轨制按键绑定核心处理逻辑 =================
+
+  bool _handleGlobalKey(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      String triggerTag = "F_${event.logicalKey.keyId}"; // 💡 F 代表 Flutter 标准键码
+      if (_executeCustomBinding(triggerTag)) return true;
+    }
+    return false;
+  }
+
+  bool _executeCustomBinding(String triggerTag) {
+    if (triggerTag == _triggerNext && _triggerNext.isNotEmpty) {
+      _playNextSong(manual: true); _resetScreenSaverTimer(); return true;
+    }
+    if (triggerTag == _triggerPrev && _triggerPrev.isNotEmpty) {
+      _playPrevSong(); _resetScreenSaverTimer(); return true;
+    }
+    if (triggerTag == _triggerPlayPause && _triggerPlayPause.isNotEmpty) {
+      _player.playOrPause(); _resetScreenSaverTimer(); return true;
+    }
+    return false;
+  }
+
+  void _saveBinding(String action, String triggerTag) {
+    setState(() {
+      if (action == 'next') _triggerNext = triggerTag;
+      if (action == 'prev') _triggerPrev = triggerTag;
+      if (action == 'playPause') _triggerPlayPause = triggerTag;
+      _currentlyBindingAction = null;
+    });
+    _prefs.setString('triggerNext', _triggerNext);
+    _prefs.setString('triggerPrev', _triggerPrev);
+    _prefs.setString('triggerPlayPause', _triggerPlayPause);
+
+    // 🎯 抓到信号的瞬间，强行关闭绑定窗口
+    if (Navigator.canPop(context)) {
+      Navigator.pop(context);
+    }
+  }
+
+  // =================================================================
+
   Future<void> _initPrefsAndState() async {
     _prefs = await SharedPreferences.getInstance();
     setState(() {
-      _bootDelay = _prefs.getInt('bootDelay') ?? 5; // 💡 读取延迟秒数
-      _startOnBoot = _prefs.getBool('startOnBoot') ?? false; // 💡 读取开机自启设定
       _uiScale = _prefs.getDouble('uiScale') ?? 1.5;
       _btnScale = _prefs.getDouble('btnScale') ?? 1.0;
       _lyricFontSize = _prefs.getDouble('lyricFontSize') ?? 50.0;
@@ -138,6 +198,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       _autoPlay = _prefs.getBool('autoPlay') ?? false;
       _showStatusBar = _prefs.getBool('showStatusBar') ?? false;
       _maxCacheGB = _prefs.getDouble('maxCacheGB') ?? 2.0;
+      _startOnBoot = _prefs.getBool('startOnBoot') ?? false;
+      _bootDelay = _prefs.getInt('bootDelay') ?? 5;
+
+      // 💡 读取保存的绑定键位
+      _triggerNext = _prefs.getString('triggerNext') ?? "";
+      _triggerPrev = _prefs.getString('triggerPrev') ?? "";
+      _triggerPlayPause = _prefs.getString('triggerPlayPause') ?? "";
+
       String? accJson = _prefs.getString('webdavAccounts');
       if (accJson != null) webdavAccounts = jsonDecode(accJson).cast<Map<String, dynamic>>();
     });
@@ -161,379 +229,103 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     }
 
     bool isFirstLaunch = _prefs.getBool('isFirstLaunch') ?? true;
-    if (isFirstLaunch) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _showFirstLaunchSetupDialog();
-      });
-    }
+    if (isFirstLaunch) WidgetsBinding.instance.addPostFrameCallback((_) { _showFirstLaunchSetupDialog(); });
   }
 
   void _showFirstLaunchSetupDialog() {
-    showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) {
-          return StatefulBuilder(
-              builder: (context, setDialogState) {
-                return AlertDialog(
-                    backgroundColor: Colors.white.withOpacity(0.95),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    title: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text("🎉 欢迎使用 NAS Car Player", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold))
-                    ),
-                    content: SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                              "由于车机屏幕比例与分辨率差异巨大，\n请先滑动下方滑块，观察背后界面的变化\n调整到您觉得最舒服的大小：",
-                              style: TextStyle(fontSize: 18, height: 1.5, color: Colors.black87),
-                              textAlign: TextAlign.center
-                          ),
-                          SizedBox(height: 30),
-                          FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: Row(
-                                children: [
-                                  Text("全局缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.black87)),
-                                  SizedBox(
-                                      width: 250,
-                                      child: Slider(
-                                          value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent,
-                                          onChanged: (val) {
-                                            setDialogState(() { _uiScale = val; });
-                                            setState(() { _uiScale = val; });
-                                          }
-                                      )
-                                  ),
-                                  SizedBox(width: 65, child: Text("${_uiScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: 20, color: Colors.black87)))
-                                ]
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    actions: [
-                      Center(
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                    padding: EdgeInsets.symmetric(horizontal: 40, vertical: 16),
-                                    backgroundColor: Colors.blueAccent,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))
-                                ),
-                                onPressed: () {
-                                  _prefs.setDouble('uiScale', _uiScale);
-                                  _prefs.setBool('isFirstLaunch', false);
-                                  Navigator.pop(context);
-                                },
-                                child: Text("调整好了，进入车机！", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold))
-                            ),
-                          )
-                      )
-                    ]
-                );
-              }
-          );
-        }
-    );
+    showDialog(context: context, barrierDismissible: false, builder: (context) { return StatefulBuilder(builder: (context, setDialogState) { return AlertDialog(backgroundColor: Colors.white.withOpacity(0.95), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), title: FittedBox(fit: BoxFit.scaleDown, child: Text("🎉 欢迎使用 NAS Car Player", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold))), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [Text("由于车机屏幕比例与分辨率差异巨大，\n请先滑动下方滑块，观察背后界面的变化\n调整到您觉得最舒服的大小：", style: TextStyle(fontSize: 18, height: 1.5, color: Colors.black87), textAlign: TextAlign.center), SizedBox(height: 30), FittedBox(fit: BoxFit.scaleDown, child: Row(children: [Text("全局缩悉: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.black87)), SizedBox(width: 250, child: Slider(value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent, onChanged: (val) { setDialogState(() { _uiScale = val; }); setState(() { _uiScale = val; }); })), SizedBox(width: 65, child: Text("${_uiScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: 20, color: Colors.black87)))]))])), actions: [Center(child: FittedBox(fit: BoxFit.scaleDown, child: ElevatedButton(style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: 40, vertical: 16), backgroundColor: Colors.blueAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { _prefs.setDouble('uiScale', _uiScale); _prefs.setBool('isFirstLaunch', false); Navigator.pop(context); }, child: Text("调整好了，进入车机！", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)))))]); }); });
   }
 
-  void _applyStatusBar() {
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: _showStatusBar ? SystemUiOverlay.values : [SystemUiOverlay.bottom],
-    );
-  }
-
+  void _applyStatusBar() { SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: _showStatusBar ? SystemUiOverlay.values : [SystemUiOverlay.bottom]); }
   void _initClock() { _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) { if (mounted) setState(() { _currentTimeString = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}"; }); }); }
-
-  void _resetScreenSaverTimer() {
-    _screenSaverTimer?.cancel();
-    if (currentLeftScreen != 2 || _isLargeMode || _screenSaverTimeout == 0) return;
-    _screenSaverTimer = Timer(Duration(seconds: _screenSaverTimeout), () { if (mounted && currentLeftScreen == 2) setState(() => _isLargeMode = true); });
-  }
+  void _resetScreenSaverTimer() { _screenSaverTimer?.cancel(); if (currentLeftScreen != 2 || _isLargeMode || _screenSaverTimeout == 0) return; _screenSaverTimer = Timer(Duration(seconds: _screenSaverTimeout), () { if (mounted && currentLeftScreen == 2) setState(() => _isLargeMode = true); }); }
 
   Future<void> _updateCachedFilesList() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final cacheDir = Directory('${dir.path}/nas_cache');
-      if (cacheDir.existsSync() && mounted) setState(() => _cachedFiles = cacheDir.listSync().whereType<File>().map((f) => f.path.split(Platform.pathSeparator).last).toSet());
-    } catch (_) {}
+    try { final dir = await getApplicationDocumentsDirectory(); final cacheDir = Directory('${dir.path}/nas_cache'); if (cacheDir.existsSync() && mounted) setState(() => _cachedFiles = cacheDir.listSync().whereType<File>().map((f) => f.path.split(Platform.pathSeparator).last).toSet()); } catch (_) {}
   }
 
   Future<String> _getPlayableUrl(String songName, String remoteUrl, String auth) async {
-    try {
-      final cacheDir = Directory('${(await getApplicationDocumentsDirectory()).path}/nas_cache');
-      if (!cacheDir.existsSync()) cacheDir.createSync();
-      final File localFile = File('${cacheDir.path}/$songName');
-      if (localFile.existsSync() && localFile.lengthSync() > 0) return localFile.path;
-      _backgroundDownloadAndLimit(songName, remoteUrl, auth, cacheDir, localFile);
-      return remoteUrl;
-    } catch (e) { return remoteUrl; }
+    try { final cacheDir = Directory('${(await getApplicationDocumentsDirectory()).path}/nas_cache'); if (!cacheDir.existsSync()) cacheDir.createSync(); final File localFile = File('${cacheDir.path}/$songName'); if (localFile.existsSync() && localFile.lengthSync() > 0) return localFile.path; _backgroundDownloadAndLimit(songName, remoteUrl, auth, cacheDir, localFile); return remoteUrl; } catch (e) { return remoteUrl; }
   }
 
   void _backgroundDownloadAndLimit(String songName, String remoteUrl, String auth, Directory cacheDir, File localFile) async {
-    try {
-      await Dio().download(remoteUrl, localFile.path, options: Options(headers: {'Authorization': auth}));
-      _updateCachedFilesList();
-      final files = cacheDir.listSync().whereType<File>().toList();
-      double totalSize = 0; for (var f in files) totalSize += f.lengthSync();
-      double limitBytes = _maxCacheGB * 1024 * 1024 * 1024;
-      if (totalSize > limitBytes) {
-        files.sort((a, b) => a.lastModifiedSync().compareTo(b.lastModifiedSync()));
-        for (var f in files) { if (totalSize <= limitBytes) break; totalSize -= f.lengthSync(); f.deleteSync(); }
-        _updateCachedFilesList();
-      }
-    } catch (_) {}
+    try { await Dio().download(remoteUrl, localFile.path, options: Options(headers: {'Authorization': auth})); _updateCachedFilesList(); final files = cacheDir.listSync().whereType<File>().toList(); double totalSize = 0; for (var f in files) totalSize += f.lengthSync(); double limitBytes = _maxCacheGB * 1024 * 1024 * 1024; if (totalSize > limitBytes) { files.sort((a, b) => a.lastModifiedSync().compareTo(b.lastModifiedSync())); for (var f in files) { if (totalSize <= limitBytes) break; totalSize -= f.lengthSync(); f.deleteSync(); } _updateCachedFilesList(); } } catch (_) {}
   }
 
   void _playNextSong({bool manual = false}) {
-    if (realNasSongs.isEmpty) return;
-    int idx = realNasSongs.indexOf(_currentFileName); if (idx == -1) idx = 0;
-    int next = _loopMode == 2 ? Random().nextInt(realNasSongs.length) : (_loopMode == 1 && !manual ? idx : (idx + 1) % realNasSongs.length);
-    playNasSong(realNasSongs[next]);
+    if (realNasSongs.isEmpty) return; int idx = realNasSongs.indexOf(_currentFileName); if (idx == -1) idx = 0; int next = _loopMode == 2 ? Random().nextInt(realNasSongs.length) : (_loopMode == 1 && !manual ? idx : (idx + 1) % realNasSongs.length); playNasSong(realNasSongs[next]);
   }
 
   void _playPrevSong() {
-    if (realNasSongs.isEmpty) return;
-    int idx = realNasSongs.indexOf(_currentFileName);
-    int prev = _loopMode == 2 ? Random().nextInt(realNasSongs.length) : (idx == -1 ? 0 : (idx - 1 + realNasSongs.length) % realNasSongs.length);
-    playNasSong(realNasSongs[prev]);
+    if (realNasSongs.isEmpty) return; int idx = realNasSongs.indexOf(_currentFileName); int prev = _loopMode == 2 ? Random().nextInt(realNasSongs.length) : (idx == -1 ? 0 : (idx - 1 + realNasSongs.length) % realNasSongs.length); playNasSong(realNasSongs[prev]);
   }
 
   void _scrollToCurrentSong() {
-    if (realNasSongs.isEmpty || _currentFileName.isEmpty) return;
-    int index = realNasSongs.indexOf(_currentFileName);
-    if (index != -1) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_playlistScrollController.hasClients) {
-          double itemHeight = s(114.0);
-          double viewportHeight = _playlistScrollController.position.viewportDimension;
-          double targetOffset = (index * itemHeight) - (viewportHeight / 2) + (itemHeight / 2);
-          _playlistScrollController.animateTo(
-            targetOffset.clamp(0.0, _playlistScrollController.position.maxScrollExtent),
-            duration: const Duration(milliseconds: 500),
-            curve: Curves.easeOutCubic,
-          );
-        }
-      });
-    }
+    if (realNasSongs.isEmpty || _currentFileName.isEmpty) return; int index = realNasSongs.indexOf(_currentFileName);
+    if (index != -1) { WidgetsBinding.instance.addPostFrameCallback((_) { if (_playlistScrollController.hasClients) { double itemHeight = s(114.0); double viewportHeight = _playlistScrollController.position.viewportDimension; double targetOffset = (index * itemHeight) - (viewportHeight / 2) + (itemHeight / 2); _playlistScrollController.animateTo(targetOffset.clamp(0.0, _playlistScrollController.position.maxScrollExtent), duration: const Duration(milliseconds: 500), curve: Curves.easeOutCubic); } }); }
   }
 
   Future<void> _updatePalette(String imageUrl) async {
-    try {
-      final palette = await PaletteGenerator.fromImageProvider(NetworkImage(imageUrl), maximumColorCount: 20);
-      Color? targetColor = palette.vibrantColor?.color ?? palette.dominantColor?.color;
-
-      if (targetColor != null) {
-        HSLColor hsl = HSLColor.fromColor(targetColor);
-        bool isDullOrGrey = hsl.saturation < 0.3 || hsl.lightness < 0.15 || hsl.lightness > 0.85;
-
-        if (isDullOrGrey) {
-          _lyricHighlightColor = const Color(0xFF1ED760);
-          _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15);
-        } else {
-          _lyricHighlightColor = hsl.withLightness((hsl.lightness - 0.25).clamp(0.0, 1.0)).toColor();
-          _bottomGlowColor = targetColor.withOpacity(0.25);
-        }
-      } else {
-        _lyricHighlightColor = const Color(0xFF1ED760);
-        _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15);
-      }
-      if (mounted) setState(() {});
-    } catch (_) {
-      if (mounted) setState(() {
-        _lyricHighlightColor = const Color(0xFF1ED760);
-        _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15);
-      });
-    }
+    try { final palette = await PaletteGenerator.fromImageProvider(NetworkImage(imageUrl), maximumColorCount: 20); Color? targetColor = palette.vibrantColor?.color ?? palette.dominantColor?.color; if (targetColor != null) { HSLColor hsl = HSLColor.fromColor(targetColor); bool isDullOrGrey = hsl.saturation < 0.3 || hsl.lightness < 0.15 || hsl.lightness > 0.85; if (isDullOrGrey) { _lyricHighlightColor = const Color(0xFF1ED760); _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15); } else { _lyricHighlightColor = hsl.withLightness((hsl.lightness - 0.25).clamp(0.0, 1.0)).toColor(); _bottomGlowColor = targetColor.withOpacity(0.25); } } else { _lyricHighlightColor = const Color(0xFF1ED760); _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15); } if (mounted) setState(() {}); } catch (_) { if (mounted) setState(() { _lyricHighlightColor = const Color(0xFF1ED760); _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15); }); }
   }
 
   void _parseRawLrcText(String text) {
-    parsedLyrics.clear(); _currentLyricIndex = 0;
-    String cleanText = text.replaceAll(r'\n', '\n');
-    RegExp timeTagRegExp = RegExp(r'\[(\d{2,}):(\d{2})(?:[:.](\d+))?');
-    for (var line in cleanText.split('\n')) {
-      var match = timeTagRegExp.firstMatch(line);
-      if (match != null) {
-        int min = int.parse(match.group(1)!), sec = int.parse(match.group(2)!);
-        int ms = match.group(3) != null ? int.parse(match.group(3)!.padRight(3, '0').substring(0, 3)) : 0;
-        String pureLyric = line.replaceAll(RegExp(r'\[.*?\]|<.*?>'), '').trim();
-        if (pureLyric.isNotEmpty) parsedLyrics.add({'time': Duration(minutes: min, seconds: sec, milliseconds: ms), 'text': pureLyric});
-      }
-    }
+    parsedLyrics.clear(); _currentLyricIndex = 0; String cleanText = text.replaceAll(r'\n', '\n'); RegExp timeTagRegExp = RegExp(r'\[(\d{2,}):(\d{2})(?:[:.](\d+))?');
+    for (var line in cleanText.split('\n')) { var match = timeTagRegExp.firstMatch(line); if (match != null) { int min = int.parse(match.group(1)!), sec = int.parse(match.group(2)!); int ms = match.group(3) != null ? int.parse(match.group(3)!.padRight(3, '0').substring(0, 3)) : 0; String pureLyric = line.replaceAll(RegExp(r'\[.*?\]|<.*?>'), '').trim(); if (pureLyric.isNotEmpty) parsedLyrics.add({'time': Duration(minutes: min, seconds: sec, milliseconds: ms), 'text': pureLyric}); } }
     if (parsedLyrics.isEmpty) parsedLyrics.add({'time': Duration.zero, 'text': '纯音乐 / 暂无滚动歌词'}); else parsedLyrics.sort((a, b) => a['time'].compareTo(b['time']));
-
     _lyricKeys = List.generate(parsedLyrics.length, (i) => GlobalKey()); _miniLyricKeys = List.generate(parsedLyrics.length, (i) => GlobalKey());
-    if (_lyricScrollController.hasClients) _lyricScrollController.jumpTo(0);
-    if (_miniLyricScrollController.hasClients) _miniLyricScrollController.jumpTo(0);
+    if (_lyricScrollController.hasClients) _lyricScrollController.jumpTo(0); if (_miniLyricScrollController.hasClients) _miniLyricScrollController.jumpTo(0);
   }
 
   void _updateLyricScroll(Duration currentPos) {
-    if (parsedLyrics.isEmpty) return;
-
-    Duration adjustedPos = Duration(milliseconds: currentPos.inMilliseconds + (_lyricOffset * 1000).toInt());
-
-    int newIndex = 0;
-    for (int i = 0; i < parsedLyrics.length; i++) {
-      if (adjustedPos >= parsedLyrics[i]['time']) newIndex = i; else break;
-    }
-
+    if (parsedLyrics.isEmpty) return; Duration adjustedPos = Duration(milliseconds: currentPos.inMilliseconds + (_lyricOffset * 1000).toInt()); int newIndex = 0;
+    for (int i = 0; i < parsedLyrics.length; i++) { if (adjustedPos >= parsedLyrics[i]['time']) newIndex = i; else break; }
     if (newIndex != _currentLyricIndex) {
       setState(() => _currentLyricIndex = newIndex);
-
-      void animateToKey(GlobalKey key, ScrollController ctrl, double estLineHeight, double align) {
-        if (key.currentContext != null) {
-          Scrollable.ensureVisible(key.currentContext!, alignment: align, duration: const Duration(milliseconds: 400), curve: Curves.easeOutCubic);
-        } else {
-          if (ctrl.hasClients) {
-            ctrl.jumpTo((newIndex * estLineHeight).clamp(0.0, ctrl.position.maxScrollExtent));
-          }
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (key.currentContext != null) {
-              Scrollable.ensureVisible(key.currentContext!, alignment: align, duration: const Duration(milliseconds: 200), curve: Curves.easeOutCubic);
-            }
-          });
-        }
-      }
-
-      double largeEstHeight = _lyricFontSize * 1.5 + s(36.0);
-      double miniEstHeight = s(22.0) * 1.5 + s(18.0);
-
+      void animateToKey(GlobalKey key, ScrollController ctrl, double estLineHeight, double align) { if (key.currentContext != null) { Scrollable.ensureVisible(key.currentContext!, alignment: align, duration: const Duration(milliseconds: 400), curve: Curves.easeOutCubic); } else { if (ctrl.hasClients) { ctrl.jumpTo((newIndex * estLineHeight).clamp(0.0, ctrl.position.maxScrollExtent)); } WidgetsBinding.instance.addPostFrameCallback((_) { if (key.currentContext != null) { Scrollable.ensureVisible(key.currentContext!, alignment: align, duration: const Duration(milliseconds: 200), curve: Curves.easeOutCubic); } }); } }
+      double largeEstHeight = _lyricFontSize * 1.5 + s(36.0); double miniEstHeight = s(22.0) * 1.5 + s(18.0);
       if (_lyricKeys.isNotEmpty && newIndex < _lyricKeys.length) animateToKey(_lyricKeys[newIndex], _lyricScrollController, largeEstHeight, _isLargeMode ? 0.25 : 0.5);
       if (_miniLyricKeys.isNotEmpty && newIndex < _miniLyricKeys.length) animateToKey(_miniLyricKeys[newIndex], _miniLyricScrollController, miniEstHeight, 0.5);
     }
   }
 
-  Future<String?> _fetchApiLrc(Dio dio, String title, String artist) async {
-    try {
-      var res = await dio.get("https://tools.rangotec.com/api/anon/lrc", queryParameters: {"title": title, "artist": artist, "od": "asc"});
-      var data = res.data is String ? jsonDecode(res.data) : res.data;
-      if (data['code'] == 200 && data['data'] != null && data['data'].isNotEmpty) return data['data'][0]['lrc'];
-    } catch (_) {} return null;
-  }
+  Future<String?> _fetchApiLrc(Dio dio, String title, String artist) async { try { var res = await dio.get("https://tools.rangotec.com/api/anon/lrc", queryParameters: {"title": title, "artist": artist, "od": "asc"}); var data = res.data is String ? jsonDecode(res.data) : res.data; if (data['code'] == 200 && data['data'] != null && data['data'].isNotEmpty) return data['data'][0]['lrc']; } catch (_) {} return null; }
+  Future<String?> _fetchApiCover(Dio dio, String title, String artist) async { try { var res = await dio.get("https://itunes.apple.com/search", queryParameters: {"term": "$artist $title".trim(), "limit": 1, "entity": "song", "country": "cn"}); var data = res.data is String ? jsonDecode(res.data) : res.data; if (data['resultCount'] > 0) return data['results'][0]['artworkUrl100'].replaceAll('100x100bb.jpg', '600x600bb.jpg'); } catch (_) {} return null; }
 
-  Future<String?> _fetchApiCover(Dio dio, String title, String artist) async {
-    try {
-      var res = await dio.get("https://itunes.apple.com/search", queryParameters: {"term": "$artist $title".trim(), "limit": 1, "entity": "song", "country": "cn"});
-      var data = res.data is String ? jsonDecode(res.data) : res.data;
-      if (data['resultCount'] > 0) return data['results'][0]['artworkUrl100'].replaceAll('100x100bb.jpg', '600x600bb.jpg');
-    } catch (_) {} return null;
-  }
-
+  // 💡 已回退到纯靠文件名的稳定解析版
   Future<void> fetchLyricAndCover(String songName) async {
-    if (activeAccount == null) return;
-    String pureName = songName.replaceAll(RegExp(r'\.[^.]+$'), '');
-    String auth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
-
+    if (activeAccount == null) return; String pureName = songName.replaceAll(RegExp(r'\.[^.]+$'), ''); String auth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
     String? finalLrc; bool isLocal = false;
-    try {
-      var response = await Dio().get("${activeAccount!['url']}${Uri.encodeComponent(pureName)}.lrc", options: Options(headers: {'Authorization': auth}));
-      finalLrc = response.data.toString(); isLocal = true;
-    } catch (_) {}
-
+    try { var response = await Dio().get("${activeAccount!['url']}${Uri.encodeComponent(pureName)}.lrc", options: Options(headers: {'Authorization': auth})); finalLrc = response.data.toString(); isLocal = true; } catch (_) {}
     var apiDio = Dio(BaseOptions(connectTimeout: const Duration(seconds: 5), receiveTimeout: const Duration(seconds: 5)))..httpClientAdapter = IOHttpClientAdapter(createHttpClient: () => HttpClient()..badCertificateCallback = (c, h, p) => true);
-
-    String cleanName = pureName.replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), '').trim();
-    String t1 = cleanName, a1 = "", t2 = "", a2 = "";
+    String cleanName = pureName.replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), '').trim(); String t1 = cleanName, a1 = "", t2 = "", a2 = "";
     if (cleanName.contains('-')) { var p = cleanName.split('-'); a1 = p[0].trim(); t1 = p[1].trim(); t2 = p[0].trim(); a2 = p[1].trim(); }
-
-    if (!isLocal) {
-      finalLrc = await _fetchApiLrc(apiDio, t1, a1);
-      if ((finalLrc == null || finalLrc.isEmpty) && t2.isNotEmpty) finalLrc = await _fetchApiLrc(apiDio, t2, a2);
-      if (finalLrc == null || finalLrc.isEmpty) finalLrc = await _fetchApiLrc(apiDio, cleanName, "");
-
-      if (finalLrc != null && finalLrc.isNotEmpty) {
-        _parseRawLrcText("[00:01.00]歌词由 千古八方API 提供\n$finalLrc");
-      } else {
-        _parseRawLrcText("[00:01.00]感谢使用 \n[00:02.00]暂无本地歌词，且未匹配到网络词库");
-      }
-    } else {
-      _parseRawLrcText("[00:01.00]感谢使用 \n${finalLrc!}");
-    }
-
-    String? finalCover = await _fetchApiCover(apiDio, t1, a1);
-    if (finalCover == null && t2.isNotEmpty) finalCover = await _fetchApiCover(apiDio, t2, a2);
-    if (finalCover == null) finalCover = await _fetchApiCover(apiDio, cleanName, "");
-
-    setState(() { currentCoverUrl = (finalCover != null && finalCover.startsWith("http")) ? finalCover : defaultCoverUrl; });
-    _updatePalette(currentCoverUrl);
+    if (!isLocal) { finalLrc = await _fetchApiLrc(apiDio, t1, a1); if ((finalLrc == null || finalLrc.isEmpty) && t2.isNotEmpty) finalLrc = await _fetchApiLrc(apiDio, t2, a2); if (finalLrc == null || finalLrc.isEmpty) finalLrc = await _fetchApiLrc(apiDio, cleanName, ""); if (finalLrc != null && finalLrc.isNotEmpty) { _parseRawLrcText("[00:01.00]歌词由 千古八方API 提供\n$finalLrc"); } else { _parseRawLrcText("[00:01.00]感谢使用 \n[00:02.00]暂无本地歌词，且未匹配到网络词库"); } } else { _parseRawLrcText("[00:01.00]感谢使用 \n${finalLrc!}"); }
+    String? finalCover = await _fetchApiCover(apiDio, t1, a1); if (finalCover == null && t2.isNotEmpty) finalCover = await _fetchApiCover(apiDio, t2, a2); if (finalCover == null) finalCover = await _fetchApiCover(apiDio, cleanName, "");
+    setState(() { currentCoverUrl = (finalCover != null && finalCover.startsWith("http")) ? finalCover : defaultCoverUrl; }); _updatePalette(currentCoverUrl);
   }
 
   Future<void> fetchSongsFromWebDav({bool silent = false}) async {
-    if (activeAccount == null) return;
-    if (!silent) setState(() => isLoading = true);
-    String auth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
-    try {
-      var response = await Dio().request(activeAccount!['url'], options: Options(method: 'PROPFIND', headers: {'Authorization': auth, 'Depth': '1'}));
-      RegExp regExp = RegExp(r'<D:href>([^<]+\.(mp3|flac|wav|m4a|aac))<\/D:href>', caseSensitive: false);
-      Iterable<Match> matches = regExp.allMatches(response.data.toString());
-      List<String> tempSongs = [];
-      for (var match in matches) {
-        String cleanName = Uri.decodeComponent(match.group(1) ?? "").split('/').last.replaceAll('&amp;', '&');
-        if (cleanName.isNotEmpty && !tempSongs.contains(cleanName)) tempSongs.add(cleanName);
-      }
-      setState(() { realNasSongs = tempSongs; isLoading = false; }); _updateCachedFilesList();
-    } catch (e) { if (!silent) setState(() => isLoading = false); }
+    if (activeAccount == null) return; if (!silent) setState(() => isLoading = true); String auth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
+    try { var response = await Dio().request(activeAccount!['url'], options: Options(method: 'PROPFIND', headers: {'Authorization': auth, 'Depth': '1'})); RegExp regExp = RegExp(r'<D:href>([^<]+\.(mp3|flac|wav|m4a|aac))<\/D:href>', caseSensitive: false); Iterable<Match> matches = regExp.allMatches(response.data.toString()); List<String> tempSongs = []; for (var match in matches) { String cleanName = Uri.decodeComponent(match.group(1) ?? "").split('/').last.replaceAll('&amp;', '&'); if (cleanName.isNotEmpty && !tempSongs.contains(cleanName)) tempSongs.add(cleanName); } setState(() { realNasSongs = tempSongs; isLoading = false; }); _updateCachedFilesList(); } catch (e) { if (!silent) setState(() => isLoading = false); }
   }
 
   Future<void> playNasSong(String songName) async {
-    if (activeAccount == null) return;
-    playingAccount = activeAccount;
-
-    String rawAuth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
-    String remoteUrl = "${activeAccount!['url']}${Uri.encodeFull(songName)}";
-
-    setState(() { currentCoverUrl = defaultCoverUrl; _currentFileName = songName; });
-    _lyricOffset = _prefs.getDouble('lyricOffset_$songName') ?? 0.0;
-    _parseRawLrcText("[00:00.00]正在检索本地缓存与网络词库...");
-    fetchLyricAndCover(songName);
-
-    try {
-      String playPath = await _getPlayableUrl(songName, remoteUrl, rawAuth);
-      await _player.open(Media(playPath, httpHeaders: playPath.startsWith('http') ? {'Authorization': rawAuth} : {}));
-
-      setState(() {
-        String pure = songName.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), '');
-        if (pure.contains('-')) { var p = pure.split('-'); currentArtist = p[0].trim(); currentPlayingSong = p[1].trim(); }
-        else { currentPlayingSong = pure.trim(); currentArtist = "私人乐库"; }
-        currentLeftScreen = 2; _isLargeMode = false;
-      });
-      _resetScreenSaverTimer();
-    } catch (_) {}
+    if (activeAccount == null) return; playingAccount = activeAccount; String rawAuth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}"; String remoteUrl = "${activeAccount!['url']}${Uri.encodeFull(songName)}";
+    setState(() { currentCoverUrl = defaultCoverUrl; _currentFileName = songName; }); _lyricOffset = _prefs.getDouble('lyricOffset_$songName') ?? 0.0; _parseRawLrcText("[00:00.00]正在检索本地缓存与网络词库..."); fetchLyricAndCover(songName);
+    try { String playPath = await _getPlayableUrl(songName, remoteUrl, rawAuth); await _player.open(Media(playPath, httpHeaders: playPath.startsWith('http') ? {'Authorization': rawAuth} : {})); setState(() { String pure = songName.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), ''); if (pure.contains('-')) { var p = pure.split('-'); currentArtist = p[0].trim(); currentPlayingSong = p[1].trim(); } else { currentPlayingSong = pure.trim(); currentArtist = "私人乐库"; } currentLeftScreen = 2; _isLargeMode = false; }); _resetScreenSaverTimer(); } catch (_) {}
   }
 
   String _printDuration(Duration d) => "${d.inMinutes.remainder(60).toString().padLeft(2, "0")}:${d.inSeconds.remainder(60).toString().padLeft(2, "0")}";
-
-  @override
-  void dispose() {
-    _playbackSaveTimer?.cancel();
-    _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
-    _spinController.dispose(); _player.dispose(); super.dispose();
-  }
 
   Widget _buildScrollingLyrics(BuildContext context, {bool isMini = false}) {
     return ShaderMask(
       shaderCallback: (Rect bounds) => const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black, Colors.black, Colors.transparent], stops: [0.0, 0.05, 0.95, 1.0]).createShader(bounds), blendMode: BlendMode.dstIn,
       child: ListView.builder(
-        cacheExtent: 99999,
-        controller: isMini ? _miniLyricScrollController : _lyricScrollController,
-        padding: EdgeInsets.symmetric(vertical: isMini ? s(90.0) : MediaQuery.of(context).size.height / 3.5),
-        physics: const BouncingScrollPhysics(), itemCount: parsedLyrics.length,
+        cacheExtent: 99999, controller: isMini ? _miniLyricScrollController : _lyricScrollController, padding: EdgeInsets.symmetric(vertical: isMini ? s(90.0) : MediaQuery.of(context).size.height / 3.5), physics: const BouncingScrollPhysics(), itemCount: parsedLyrics.length,
         itemBuilder: (context, index) {
           bool isCurrent = index == _currentLyricIndex;
-          return AnimatedDefaultTextStyle(
-            duration: const Duration(milliseconds: 300),
-            style: TextStyle(
-              fontSize: isCurrent ? (isMini ? s(24) : (_isLargeMode ? _lyricFontSize + s(6) : _lyricFontSize)) : (isMini ? s(20) : (_isLargeMode ? _lyricFontSize - s(8) : _lyricFontSize - s(10))),
-              fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-              color: isCurrent ? _lyricHighlightColor : (isMini ? Colors.black45 : Colors.black87), height: 1.5,
-            ),
-            child: Container(key: isMini ? _miniLyricKeys[index] : _lyricKeys[index], padding: EdgeInsets.symmetric(vertical: isMini ? s(9.0) : s(18.0)), alignment: isMini ? Alignment.center : Alignment.centerLeft, child: Text(parsedLyrics[index]['text'])),
-          );
+          return AnimatedDefaultTextStyle(duration: const Duration(milliseconds: 300), style: TextStyle(fontSize: isCurrent ? (isMini ? s(24) : (_isLargeMode ? _lyricFontSize + s(6) : _lyricFontSize)) : (isMini ? s(20) : (_isLargeMode ? _lyricFontSize - s(8) : _lyricFontSize - s(10))), fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal, color: isCurrent ? _lyricHighlightColor : (isMini ? Colors.black45 : Colors.black87), height: 1.5), child: Container(key: isMini ? _miniLyricKeys[index] : _lyricKeys[index], padding: EdgeInsets.symmetric(vertical: isMini ? s(9.0) : s(18.0)), alignment: isMini ? Alignment.center : Alignment.centerLeft, child: Text(parsedLyrics[index]['text'])));
         },
       ),
     );
@@ -542,13 +334,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   @override
   Widget build(BuildContext context) {
     double sidebarWidth = (currentLeftScreen == 2 && _isLargeMode) ? 0 : s(390);
-
     return PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (bool didPop, dynamic result) {
-          if (didPop) return;
-          platform.invokeMethod('sendToBackground');
-        },
+        canPop: false, onPopInvokedWithResult: (bool didPop, dynamic result) { if (didPop) return; platform.invokeMethod('sendToBackground'); },
         child: Scaffold(
             body: Stack(
               children: [
@@ -556,8 +343,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                 Row(
                   children: [
                     AnimatedContainer(
-                      duration: const Duration(milliseconds: 350), curve: Curves.easeInOut, width: sidebarWidth,
-                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.35)), clipBehavior: Clip.antiAlias,
+                      duration: const Duration(milliseconds: 350), curve: Curves.easeInOut, width: sidebarWidth, decoration: BoxDecoration(color: Colors.white.withOpacity(0.35)), clipBehavior: Clip.antiAlias,
                       child: SizedBox(
                         width: s(390),
                         child: Padding(
@@ -566,42 +352,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               GestureDetector(onTap: () { setState(() { currentLeftScreen = 0; _isLargeMode = false; }); _screenSaverTimer?.cancel(); }, child: Row(children: [Icon(Icons.music_note, color: Colors.blueAccent, size: s(54)), SizedBox(width: s(12)), Text('NAS 乐库', style: TextStyle(color: Colors.black87, fontSize: s(30), fontWeight: FontWeight.bold))])),
-                              Expanded(
-                                child: AnimatedAlign(
-                                  duration: const Duration(milliseconds: 600), curve: Curves.easeInOut, alignment: (currentPlayingSong == "等待播放" && !isPlaying) ? Alignment.center : Alignment.topCenter,
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      SizedBox(height: s(15)),
-                                      RotationTransition(turns: _spinController, child: Container(width: s(160), height: s(160), decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: s(20), offset: Offset(0, s(8)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(40), height: s(40), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))),
-                                      SizedBox(height: s(15)),
-                                      Text(currentPlayingSong, style: TextStyle(fontSize: s(30), fontWeight: FontWeight.bold, color: Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
-                                      Text(currentArtist, style: TextStyle(fontSize: s(20), color: Colors.black54)),
-                                      if (currentPlayingSong != "等待播放") Expanded(child: GestureDetector(onTap: () { setState(() { currentLeftScreen = 2; _isLargeMode = false; _resetScreenSaverTimer(); }); }, child: Container(margin: EdgeInsets.symmetric(vertical: s(12)), child: _buildScrollingLyrics(context, isMini: true))))
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              Container(
-                                padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                  children: [
-                                    IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }),
-                                    IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }),
-                                    IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }),
-                                    IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }),
-                                  ],
-                                ),
-                              ),
+                              Expanded(child: AnimatedAlign(duration: const Duration(milliseconds: 600), curve: Curves.easeInOut, alignment: (currentPlayingSong == "等待播放" && !isPlaying) ? Alignment.center : Alignment.topCenter, child: Column(mainAxisSize: MainAxisSize.min, children: [SizedBox(height: s(15)), RotationTransition(turns: _spinController, child: Container(width: s(160), height: s(160), decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: s(20), offset: Offset(0, s(8)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(40), height: s(40), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))), SizedBox(height: s(15)), Text(currentPlayingSong, style: TextStyle(fontSize: s(30), fontWeight: FontWeight.bold, color: Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center), Text(currentArtist, style: TextStyle(fontSize: s(20), color: Colors.black54)), if (currentPlayingSong != "等待播放") Expanded(child: GestureDetector(onTap: () { setState(() { currentLeftScreen = 2; _isLargeMode = false; _resetScreenSaverTimer(); }); }, child: Container(margin: EdgeInsets.symmetric(vertical: s(12)), child: _buildScrollingLyrics(context, isMini: true))))]))),
+                              Container(padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))), child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); })])),
                             ],
                           ),
                         ),
                       ),
                     ),
-
                     if (sidebarWidth > 0) Container(width: 1, color: Colors.black12),
-
                     Expanded(child: IndexedStack(index: currentLeftScreen == 2 ? 2 : currentLeftScreen, children: [ _buildNasDashboard(), _buildSongListView(), _buildQQMusicUnifiedStage(), _buildSettingsScreen() ])),
                   ],
                 ),
@@ -618,16 +376,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('我的资源', style: TextStyle(fontSize: s(36), fontWeight: FontWeight.bold, color: Colors.black87)), SizedBox(height: s(36)),
-          Expanded(
-            child: GridView.builder(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.4, crossAxisSpacing: s(24), mainAxisSpacing: s(24)),
-              itemCount: webdavAccounts.length + 1,
-              itemBuilder: (context, index) {
-                if (index == webdavAccounts.length) return _buildDashboardCard(title: '系统设置 ⚙️', subtitle: '添加云盘与偏好设置', onTap: () { setState(() { currentLeftScreen = 3; }); });
-                var acc = webdavAccounts[index]; return _buildDashboardCard(title: '${acc['name']} ☁️', subtitle: activeAccount == acc && realNasSongs.isNotEmpty ? '已挂载 / 共 ${realNasSongs.length} 首歌' : '点击连接挂载', onTap: () { activeAccount = acc; fetchSongsFromWebDav(); setState(() { currentLeftScreen = 1; }); });
-              },
-            ),
-          )
+          Expanded(child: GridView.builder(gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.4, crossAxisSpacing: s(24), mainAxisSpacing: s(24)), itemCount: webdavAccounts.length + 1, itemBuilder: (context, index) { if (index == webdavAccounts.length) return _buildDashboardCard(title: '系统设置 ⚙️', subtitle: '添加云盘与偏好设置', onTap: () { setState(() { currentLeftScreen = 3; }); }); var acc = webdavAccounts[index]; return _buildDashboardCard(title: '${acc['name']} ☁️', subtitle: activeAccount == acc && realNasSongs.isNotEmpty ? '已挂载 / 共 ${realNasSongs.length} 首歌' : '点击连接挂载', onTap: () { activeAccount = acc; fetchSongsFromWebDav(); setState(() { currentLeftScreen = 1; }); }); }))
         ],
       ),
     );
@@ -642,71 +391,98 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("已配置的 WebDAV 节点", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)), ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.black87, padding: EdgeInsets.symmetric(horizontal: s(24), vertical: s(12))), icon: Icon(Icons.add, size: s(28)), label: Text("添加", style: TextStyle(fontSize: s(24))), onPressed: () => _showAddWebDAVDialog())]),
           SizedBox(height: s(24)),
-          ...webdavAccounts.asMap().entries.map((entry) {
-            int idx = entry.key; var acc = entry.value;
-            return Card(color: Colors.white.withOpacity(0.6), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(12))), child: ListTile(contentPadding: EdgeInsets.all(s(12)), leading: Icon(Icons.cloud_queue, color: Colors.blueAccent, size: s(36)), title: Text(acc['name'], style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(26))), subtitle: Text(acc['url'], style: TextStyle(fontSize: s(20))), trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: Icon(Icons.edit, color: Colors.black54, size: s(36)), onPressed: () => _showAddWebDAVDialog(editIndex: idx)), IconButton(icon: Icon(Icons.delete, color: Colors.redAccent, size: s(36)), onPressed: () { setState(() { if (activeAccount == webdavAccounts[idx]) activeAccount = null; webdavAccounts.removeAt(idx); _prefs.setString('webdavAccounts', jsonEncode(webdavAccounts)); }); })])));
-          }).toList(),
+          ...webdavAccounts.asMap().entries.map((entry) { int idx = entry.key; var acc = entry.value; return Card(color: Colors.white.withOpacity(0.6), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(12))), child: ListTile(contentPadding: EdgeInsets.all(s(12)), leading: Icon(Icons.cloud_queue, color: Colors.blueAccent, size: s(36)), title: Text(acc['name'], style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(26))), subtitle: Text(acc['url'], style: TextStyle(fontSize: s(20))), trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: Icon(Icons.edit, color: Colors.black54, size: s(36)), onPressed: () => _showAddWebDAVDialog(editIndex: idx)), IconButton(icon: Icon(Icons.delete, color: Colors.redAccent, size: s(36)), onPressed: () { setState(() { if (activeAccount == webdavAccounts[idx]) activeAccount = null; webdavAccounts.removeAt(idx); _prefs.setString('webdavAccounts', jsonEncode(webdavAccounts)); }); })]))); }).toList(),
           SizedBox(height: s(48)), Text("播放与显示偏好", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("全局 UI 缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _uiScale = val; }); _prefs.setDouble('uiScale', val); _updateCachedFilesList(); })), Text("${_uiScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("全局按钮缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _btnScale, min: 0.5, max: 3.0, divisions: 25, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _btnScale = val; }); _prefs.setDouble('btnScale', val); })), Text("${_btnScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: s(20)))])),
           SwitchListTile(title: Text("断电记忆自动播放", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), subtitle: Text("启动时自动从上次断电位置继续播放", style: TextStyle(fontSize: s(20))), value: _autoPlay, onChanged: (val) { setState(() => _autoPlay = val); _prefs.setBool('autoPlay', val); }),
-          // 💡 开机启动控制开关
-          SwitchListTile(
-              title: Text("开机自动运行", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))),
-              subtitle: Text("通电开机后，在后台自动拉起本播放器", style: TextStyle(fontSize: s(20))),
-              value: _startOnBoot,
-              onChanged: (val) {
-                setState(() => _startOnBoot = val);
-                _prefs.setBool('startOnBoot', val);
-              }
-          ),
-          // 💡 只有开启自启时，才显示延迟滑块
-          if (_startOnBoot)
-            Padding(
-                padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(4)),
-                child: Row(
-                    children: [
-                      Text("自启延迟时间: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24), color: Colors.black54)),
-                      Expanded(
-                          child: Slider(
-                              value: _bootDelay.toDouble(), min: 0.0, max: 60.0, divisions: 60, activeColor: Colors.blueAccent.withOpacity(0.7),
-                              onChanged: (val) {
-                                setState(() => _bootDelay = val.toInt());
-                                _prefs.setInt('bootDelay', val.toInt());
-                              }
-                          )
-                      ),
-                      SizedBox(width: s(80), child: Text("$_bootDelay 秒", style: TextStyle(fontSize: s(22), fontWeight: FontWeight.bold), textAlign: TextAlign.right))
-                    ]
-                )
-            ),
           SwitchListTile(title: Text("隐藏系统顶部状态栏", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), subtitle: Text("开启后顶栏隐藏，但保留空调导航底栏", style: TextStyle(fontSize: s(20))), value: !_showStatusBar, onChanged: (val) { setState(() => _showStatusBar = !val); _prefs.setBool('showStatusBar', !val); _applyStatusBar(); }),
+
+          SwitchListTile(title: Text("开机自动运行", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), subtitle: Text("通电开机后，在后台自动拉起本播放器", style: TextStyle(fontSize: s(20))), value: _startOnBoot, onChanged: (val) { setState(() => _startOnBoot = val); _prefs.setBool('startOnBoot', val); }),
+          if (_startOnBoot) Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(4)), child: Row(children: [Text("自启延迟时间: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24), color: Colors.black54)), Expanded(child: Slider(value: _bootDelay.toDouble(), min: 0.0, max: 60.0, divisions: 60, activeColor: Colors.blueAccent.withOpacity(0.7), onChanged: (val) { setState(() => _bootDelay = val.toInt()); _prefs.setInt('bootDelay', val.toInt()); })), SizedBox(width: s(80), child: Text("$_bootDelay 秒", style: TextStyle(fontSize: s(22), fontWeight: FontWeight.bold), textAlign: TextAlign.right))])),
+
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("自动进入大屏: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _screenSaverTimeout.toDouble(), min: 0.0, max: 60.0, divisions: 60, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _screenSaverTimeout = val.toInt(); }); _prefs.setInt('screenSaverTimeout', val.toInt()); _resetScreenSaverTimer(); })), Text(_screenSaverTimeout == 0 ? "不自动切换" : "$_screenSaverTimeout s", style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("大屏歌词字号: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _lyricFontSize, min: 30.0, max: 100.0, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _lyricFontSize = val); _prefs.setDouble('lyricFontSize', val); })), Text(_lyricFontSize.toInt().toString(), style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("最大离线缓存 (GB): ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _maxCacheGB, min: 0.5, max: 20.0, divisions: 39, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _maxCacheGB = val); _prefs.setDouble('maxCacheGB', val); })), Text(_maxCacheGB.toStringAsFixed(1), style: TextStyle(fontSize: s(20)))])),
+
+          // 💡 完美的双轨制按键绑定 UI
+          SizedBox(height: s(48)),
+          Text("方向盘自定义按键绑定", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+          _buildKeyBindRow("上一曲", "prev", _triggerPrev, (val) { setState(()=>_triggerPrev=val); }),
+          _buildKeyBindRow("下一曲", "next", _triggerNext, (val) { setState(()=>_triggerNext=val); }),
+          _buildKeyBindRow("播放/暂停", "playPause", _triggerPlayPause, (val) { setState(()=>_triggerPlayPause=val); }),
+          SizedBox(height: s(60)),
         ],
       ),
     );
   }
 
+  // 💡 双轨制绑定行 UI 渲染
+  Widget _buildKeyBindRow(String label, String actionKey, String currentTrigger, Function(String) onBind) {
+    String displayValue = "未绑定";
+    if (currentTrigger.isNotEmpty) {
+      if (currentTrigger.startsWith("F_")) { displayValue = "普通键码: ${currentTrigger.substring(2)}"; }
+      else if (currentTrigger.startsWith("N_")) { displayValue = "原生媒体/车机信号: ${currentTrigger.substring(2)}"; }
+    }
+    return Padding(
+        padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
+        child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(label, style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24), color: Colors.black87)),
+              Row(
+                  children: [
+                    Text(displayValue, style: TextStyle(fontSize: s(20), color: Colors.black54)),
+                    SizedBox(width: s(24)),
+                    ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.black87),
+                        onPressed: () { setState(() { _currentlyBindingAction = actionKey; }); _showBindingDialog(label, actionKey); },
+                        child: Text("点击绑定", style: TextStyle(fontSize: s(20)))
+                    )
+                  ]
+              )
+            ]
+        )
+    );
+  }
+
+  // 💡 双轨制智能绑定弹窗（支持物理按键与底层原生 ADB 信号截获自动关闭）
+  void _showBindingDialog(String label, String actionKey) {
+    showDialog(
+        context: context, barrierDismissible: false,
+        builder: (context) {
+          return Focus(
+              autofocus: true,
+              onKeyEvent: (node, event) {
+                if (event is KeyDownEvent) {
+                  String triggerTag = "F_${event.logicalKey.keyId}"; // 如果捕捉到标准键盘信号
+                  _saveBinding(actionKey, triggerTag);
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: AlertDialog(
+                  title: Text("正在绑定 [$label]", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold)),
+                  content: Text("请按一下方向盘实体键，或发送 ADB 媒体指令...\n(系统捕获到任意标准按键或车机后台广播后，此窗口会自动关闭)", style: TextStyle(fontSize: s(22), height: 1.5, color: Colors.blueAccent)),
+                  actions: [
+                    TextButton(
+                        onPressed: () { setState(() { _currentlyBindingAction = null; }); Navigator.pop(context); },
+                        child: Text("取消", style: TextStyle(fontSize: s(22)))
+                    )
+                  ]
+              )
+          );
+        }
+    );
+  }
+
   void _showAddWebDAVDialog({int? editIndex}) {
-    var acc = editIndex != null ? webdavAccounts[editIndex] : null;
-    TextEditingController nameCtrl = TextEditingController(text: acc?['name'] ?? ""), urlCtrl = TextEditingController(text: acc?['url'] ?? ""), userCtrl = TextEditingController(text: acc?['user'] ?? ""), pwdCtrl = TextEditingController(text: acc?['pwd'] ?? "");
+    var acc = editIndex != null ? webdavAccounts[editIndex] : null; TextEditingController nameCtrl = TextEditingController(text: acc?['name'] ?? ""), urlCtrl = TextEditingController(text: acc?['url'] ?? ""), userCtrl = TextEditingController(text: acc?['user'] ?? ""), pwdCtrl = TextEditingController(text: acc?['pwd'] ?? "");
     showDialog(context: context, builder: (context) { return AlertDialog(title: Text(editIndex == null ? "添加 WebDAV" : "修改 WebDAV", style: TextStyle(fontSize: s(24))), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: nameCtrl, style: TextStyle(fontSize: s(20)), decoration: const InputDecoration(labelText: "显示名称 (例: 家里群晖)")), TextField(controller: urlCtrl, style: TextStyle(fontSize: s(20)), decoration: const InputDecoration(labelText: "URL (需以 / 结尾)")), TextField(controller: userCtrl, style: TextStyle(fontSize: s(20)), decoration: const InputDecoration(labelText: "用户名")), TextField(controller: pwdCtrl, style: TextStyle(fontSize: s(20)), obscureText: true, decoration: const InputDecoration(labelText: "密码"))])), actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text("取消", style: TextStyle(fontSize: s(20)))), ElevatedButton(onPressed: () { setState(() { var newAcc = {"name": nameCtrl.text, "url": urlCtrl.text, "user": userCtrl.text, "pwd": pwdCtrl.text}; if (editIndex != null) { webdavAccounts[editIndex] = newAcc; if (activeAccount == acc) activeAccount = newAcc; } else { webdavAccounts.add(newAcc); } _prefs.setString('webdavAccounts', jsonEncode(webdavAccounts)); }); Navigator.pop(context); }, child: Text("保存", style: TextStyle(fontSize: s(20))))]); });
   }
 
   Widget _buildSongListView() {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, leading: IconButton(icon: Icon(Icons.arrow_back, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 0; }); }), title: Text(activeAccount != null ? activeAccount!['name'] : '群晖歌单', style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold))),
-      body: isLoading ? const Center(child: CircularProgressIndicator()) : ListView.builder(
-        controller: _playlistScrollController, itemCount: realNasSongs.length, itemExtent: s(114.0),
-        itemBuilder: (context, index) {
-          bool isCurrent = realNasSongs[index] == _currentFileName; bool isCached = _cachedFiles.contains(realNasSongs[index]); String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘';
-          return Container(color: isCurrent ? _lyricHighlightColor.withOpacity(0.12) : Colors.transparent, child: Center(child: ListTile(leading: SizedBox(width: s(48), child: isCurrent ? Icon(Icons.equalizer, color: _lyricHighlightColor, size: s(36)) : Text('${index + 1}', style: TextStyle(fontSize: s(24), color: Colors.black54), textAlign: TextAlign.center)), title: Text(realNasSongs[index].replaceAll(RegExp(r'\.[^.]+$'), ''), style: TextStyle(fontSize: s(26), fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500, color: isCurrent ? _lyricHighlightColor : Colors.black87)), subtitle: Text(isCached ? '来自 $nasName / 已缓存' : '来自 $nasName', style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)), trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline, color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)), onTap: () => playNasSong(realNasSongs[index]))));
-        },
-      ),
-    );
+    return Scaffold(backgroundColor: Colors.transparent, appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, leading: IconButton(icon: Icon(Icons.arrow_back, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 0; }); }), title: Text(activeAccount != null ? activeAccount!['name'] : '群晖歌单', style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold))), body: isLoading ? const Center(child: CircularProgressIndicator()) : ListView.builder(controller: _playlistScrollController, itemCount: realNasSongs.length, itemExtent: s(114.0), itemBuilder: (context, index) { bool isCurrent = realNasSongs[index] == _currentFileName; bool isCached = _cachedFiles.contains(realNasSongs[index]); String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘'; return Container(color: isCurrent ? _lyricHighlightColor.withOpacity(0.12) : Colors.transparent, child: Center(child: ListTile(leading: SizedBox(width: s(48), child: isCurrent ? Icon(Icons.equalizer, color: _lyricHighlightColor, size: s(36)) : Text('${index + 1}', style: TextStyle(fontSize: s(24), color: Colors.black54), textAlign: TextAlign.center)), title: Text(realNasSongs[index].replaceAll(RegExp(r'\.[^.]+$'), ''), style: TextStyle(fontSize: s(26), fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500, color: isCurrent ? _lyricHighlightColor : Colors.black87)), subtitle: Text(isCached ? '来自 $nasName / 已缓存' : '来自 $nasName', style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)), trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline, color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)), onTap: () => playNasSong(realNasSongs[index])))); }));
   }
 
   Widget _buildQQMusicUnifiedStage() {
@@ -717,84 +493,9 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         child: Stack(
           children: [
             Positioned(left: s(30), top: s(30), child: IconButton(icon: Icon(Icons.arrow_back_ios, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 1; _screenSaverTimer?.cancel(); _scrollToCurrentSong(); }); })),
-
-            AnimatedPositioned(
-                duration: const Duration(milliseconds: 450), curve: Curves.easeInOut,
-                right: s(75),
-                bottom: _isLargeMode ? s(75) : s(225),
-                width: _isLargeMode ? s(240) : s(220),
-                height: _isLargeMode ? s(240) : s(220),
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 300),
-                  opacity: _isLargeMode ? 1.0 : 0.0,
-                  child: RotationTransition(
-                    turns: _isLargeMode ? _spinController : const AlwaysStoppedAnimation(0),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 450),
-                      decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(s(300)),
-                          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: s(25), offset: Offset(0, s(10)))],
-                          image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)
-                      ),
-                      child: Center(child: Container(width: s(45), height: s(45), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))),
-                    ),
-                  ),
-                )
-            ),
-
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, left: s(75),
-              top: _isLargeMode ? s(85) : s(90),
-              bottom: _isLargeMode ? s(60) : s(240), width: s(750),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(currentPlayingSong, style: TextStyle(fontSize: _isLargeMode ? s(40) : s(34), fontWeight: FontWeight.bold, color: Colors.black87)),
-                    Text(currentArtist, style: TextStyle(fontSize: s(18), color: Colors.black54)),
-                    SizedBox(height: s(15)),
-                    Expanded(child: _buildScrollingLyrics(context, isMini: false))
-                  ]
-              ),
-            ),
-
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 400), curve: Curves.easeInOut, left: s(75), right: s(75), bottom: _isLargeMode ? s(-180) : s(30),
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 0.0 : 1.0,
-                child: Column(
-                  children: [
-                    Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); _player.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]),
-                    FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }), SizedBox(width: s(36)),
-                            IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), SizedBox(width: s(24)),
-                            IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(100) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), SizedBox(width: s(24)),
-                            IconButton(icon: const Icon(Icons.skip_next), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }), SizedBox(width: s(36)),
-                            IconButton(icon: const Icon(Icons.timer), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _showLyricOffsetDialog(); }), SizedBox(width: s(24)),
-                            IconButton(
-                                icon: const Icon(Icons.queue_music),
-                                iconSize: s(42) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: () async {
-                                  if (playingAccount != null && activeAccount != playingAccount) {
-                                    setState(() { activeAccount = playingAccount; });
-                                    await fetchSongsFromWebDav(silent: true);
-                                  }
-                                  setState(() { currentLeftScreen = 1; _isLargeMode = false; });
-                                  _screenSaverTimer?.cancel();
-                                  Future.delayed(const Duration(milliseconds: 300), () => _scrollToCurrentSong());
-                                }
-                            )
-                          ]
-                      ),
-                    )
-                  ],
-                ),
-              ),
-            ),
+            AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, right: s(75), bottom: _isLargeMode ? s(75) : s(225), width: _isLargeMode ? s(240) : s(220), height: _isLargeMode ? s(240) : s(220), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 1.0 : 0.0, child: RotationTransition(turns: _isLargeMode ? _spinController : const AlwaysStoppedAnimation(0), child: AnimatedContainer(duration: const Duration(milliseconds: 450), decoration: BoxDecoration(borderRadius: BorderRadius.circular(s(300)), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: s(25), offset: Offset(0, s(10)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(45), height: s(45), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))))),
+            AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, left: s(75), top: _isLargeMode ? s(85) : s(90), bottom: _isLargeMode ? s(60) : s(240), width: s(750), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(currentPlayingSong, style: TextStyle(fontSize: _isLargeMode ? s(40) : s(34), fontWeight: FontWeight.bold, color: Colors.black87)), Text(currentArtist, style: TextStyle(fontSize: s(18), color: Colors.black54)), SizedBox(height: s(15)), Expanded(child: _buildScrollingLyrics(context, isMini: false))])),
+            AnimatedPositioned(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut, left: s(75), right: s(75), bottom: _isLargeMode ? s(-180) : s(30), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 0.0 : 1.0, child: Column(children: [Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); _player.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]), FittedBox(fit: BoxFit.scaleDown, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), SizedBox(width: s(24)), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(100) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.timer), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _showLyricOffsetDialog(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.queue_music), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () async { if (playingAccount != null && activeAccount != playingAccount) { setState(() { activeAccount = playingAccount; }); await fetchSongsFromWebDav(silent: true); } setState(() { currentLeftScreen = 1; _isLargeMode = false; }); _screenSaverTimer?.cancel(); Future.delayed(const Duration(milliseconds: 300), () => _scrollToCurrentSong()); })]))]))),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, right: s(75), top: _isLargeMode ? s(35) : s(-240), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 1.0 : 0.0, child: Text(_currentTimeString, style: TextStyle(fontSize: s(160), fontWeight: FontWeight.w200, color: Colors.black87, fontFamily: 'monospace')))),
           ],
         ),
@@ -803,65 +504,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   }
 
   void _showLyricOffsetDialog() {
-    showDialog(
-        context: context,
-        builder: (context) {
-          return StatefulBuilder(
-              builder: (context, setDialogState) {
-                return AlertDialog(
-                    backgroundColor: Colors.white.withOpacity(0.9),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(24))),
-                    title: Center(child: Text("单曲歌词微调", style: TextStyle(fontSize: s(24), fontWeight: FontWeight.bold))),
-                    content: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          IconButton(
-                              icon: Icon(Icons.fast_rewind, size: s(48), color: Colors.black87),
-                              onPressed: () {
-                                setDialogState(() { if (_lyricOffset > -30.0) _lyricOffset -= 0.2; });
-                                _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset);
-                                setState(() { _currentLyricIndex = -1; });
-                                _updateLyricScroll(_currentPosition);
-                              }
-                          ),
-                          SizedBox(
-                            width: s(120),
-                            child: Text(
-                              "${_lyricOffset > 0 ? '+' : ''}${_lyricOffset.toStringAsFixed(1).replaceAll('.0', '')}s",
-                              style: TextStyle(fontSize: s(32), fontWeight: FontWeight.bold, color: _lyricHighlightColor),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                          IconButton(
-                              icon: Icon(Icons.fast_forward, size: s(48), color: Colors.black87),
-                              onPressed: () {
-                                setDialogState(() { if (_lyricOffset < 30.0) _lyricOffset += 0.2; });
-                                _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset);
-                                setState(() { _currentLyricIndex = -1; });
-                                _updateLyricScroll(_currentPosition);
-                              }
-                          ),
-                        ]
-                    ),
-                    actions: [
-                      Center(
-                          child: TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: Text("完成", style: TextStyle(fontSize: s(22), color: Colors.blueAccent))
-                          )
-                      )
-                    ]
-                );
-              }
-          );
-        }
-    );
+    showDialog(context: context, builder: (context) { return StatefulBuilder(builder: (context, setDialogState) { return AlertDialog(backgroundColor: Colors.white.withOpacity(0.9), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(24))), title: Center(child: Text("单曲歌词微调", style: TextStyle(fontSize: s(24), fontWeight: FontWeight.bold))), content: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [IconButton(icon: Icon(Icons.fast_rewind, size: s(48), color: Colors.black87), onPressed: () { setDialogState(() { if (_lyricOffset > -30.0) _lyricOffset -= 0.2; }); _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset); setState(() { _currentLyricIndex = -1; }); _updateLyricScroll(_currentPosition); }), SizedBox(width: s(120), child: Text("${_lyricOffset > 0 ? '+' : ''}${_lyricOffset.toStringAsFixed(1).replaceAll('.0', '')}s", style: TextStyle(fontSize: s(32), fontWeight: FontWeight.bold, color: _lyricHighlightColor), textAlign: TextAlign.center)), IconButton(icon: Icon(Icons.fast_forward, size: s(48), color: Colors.black87), onPressed: () { setDialogState(() { if (_lyricOffset < 30.0) _lyricOffset += 0.2; }); _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset); setState(() { _currentLyricIndex = -1; }); _updateLyricScroll(_currentPosition); })]), actions: [Center(child: TextButton(onPressed: () => Navigator.pop(context), child: Text("完成", style: TextStyle(fontSize: s(22), color: Colors.blueAccent))))]); }); });
   }
 
   Widget _buildDashboardCard({required String title, required String subtitle, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap, child: Container(decoration: BoxDecoration(color: Colors.white.withOpacity(0.55), borderRadius: BorderRadius.circular(s(24)), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: s(15), offset: Offset(0, s(6)))]), padding: EdgeInsets.all(s(24)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Text(title, style: TextStyle(fontSize: s(28), fontWeight: FontWeight.bold, color: Colors.black87)), SizedBox(height: s(8)), Text(subtitle, style: TextStyle(fontSize: s(20), color: Colors.black54))])),
-    );
+    return GestureDetector(onTap: onTap, child: Container(decoration: BoxDecoration(color: Colors.white.withOpacity(0.55), borderRadius: BorderRadius.circular(s(24)), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: s(15), offset: Offset(0, s(6)))]), padding: EdgeInsets.all(s(24)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Text(title, style: TextStyle(fontSize: s(28), fontWeight: FontWeight.bold, color: Colors.black87)), SizedBox(height: s(8)), Text(subtitle, style: TextStyle(fontSize: s(20), color: Colors.black54))])));
   }
 }
