@@ -71,15 +71,18 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   Map<String, dynamic>? playingAccount;
 
   double _uiScale = 1.3;
-  double _btnScale = 1.0; // 💡 独立按钮缩放倍率
-  double _lyricOffset = 0.0; // 💡 新增：歌词时间微调（单位：秒。正数延后，负数提前）
-  // 💡 定义一条专属通道，用来和 Android 底层直接对话
+  double _btnScale = 1.0;
+  double _lyricOffset = 0.0;
+
+  // 💡 定义与 Android 底层通讯的专属通道
   static const platform = MethodChannel('com.nascarplayer/app_retain');
   double s(double value) => value * _uiScale;
 
   double _lyricFontSize = 50.0, _maxCacheGB = 2.0;
   int _screenSaverTimeout = 8;
   bool _autoPlay = false, _showStatusBar = false;
+  bool _startOnBoot = false; // 💡 新增：开机启动开关
+  int _bootDelay = 5; // 💡 默认自启延迟 5 秒
 
   @override
   void initState() {
@@ -90,36 +93,46 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _spinController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _spinController.stop();
 
-    // 💡 杀手锏：全局拦截方向盘多媒体物理按键！
-    HardwareKeyboard.instance.addHandler(_handleHardwareKeys);
+    // 💡 核心手术：监听来自 Android 底层 MediaSession 传来的方向盘指令！
+    platform.setMethodCallHandler((call) async {
+      if (call.method == "onMediaButton") {
+        String action = call.arguments.toString();
+        if (action == "next") {
+          _playNextSong(manual: true); _resetScreenSaverTimer();
+        } else if (action == "prev") {
+          _playPrevSong(); _resetScreenSaverTimer();
+        } else if (action == "play_pause") {
+          _player.playOrPause(); _resetScreenSaverTimer(); // 85键专属：智能切换
+        } else if (action == "play") {
+          _player.play(); _resetScreenSaverTimer(); // 明确指令：只许播放
+        } else if (action == "pause") {
+          _player.pause(); _resetScreenSaverTimer(); // 明确指令：只许暂停
+        }
+      }
+    });
 
-    _player.stream.playing.listen((p) { if (mounted) { setState(() => isPlaying = p); if (p) _spinController.repeat(); else _spinController.stop(); } });
+    _player.stream.playing.listen((p) {
+      if (mounted) {
+        setState(() => isPlaying = p);
+        if (p) _spinController.repeat(); else _spinController.stop();
+        // 💡 核心手术：将播放状态同步回报给系统底层，确保后台 MediaSession 永远存活！
+        platform.invokeMethod('updatePlaybackState', p);
+      }
+    });
+
     _player.stream.position.listen((pos) { if (mounted) { setState(() => _currentPosition = pos); _updateLyricScroll(pos); } });
     _player.stream.duration.listen((dur) { if (mounted) setState(() => _totalDuration = dur); });
     _player.stream.completed.listen((c) { if (c) _playNextSong(manual: false); });
   }
 
-  // 💡 方向盘物理按键拦截处理中心
-  bool _handleHardwareKeys(KeyEvent event) {
-    if (event is KeyDownEvent) {
-      if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause ||
-          event.logicalKey == LogicalKeyboardKey.mediaPlay ||
-          event.logicalKey == LogicalKeyboardKey.mediaPause) {
-        _player.playOrPause(); _resetScreenSaverTimer(); return true;
-      } else if (event.logicalKey == LogicalKeyboardKey.mediaTrackNext) { // 👈 名字已修正
-        _playNextSong(manual: true); _resetScreenSaverTimer(); return true;
-      } else if (event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) { // 👈 名字已修正
-        _playPrevSong(); _resetScreenSaverTimer(); return true;
-      }
-    }
-    return false;
-  }
-
+  // 👇 下面的方法全都是经过优化的最新版，直接覆盖无忧
   Future<void> _initPrefsAndState() async {
     _prefs = await SharedPreferences.getInstance();
     setState(() {
+      _bootDelay = _prefs.getInt('bootDelay') ?? 5; // 💡 读取延迟秒数
+      _startOnBoot = _prefs.getBool('startOnBoot') ?? false; // 💡 读取开机自启设定
       _uiScale = _prefs.getDouble('uiScale') ?? 1.5;
-      _btnScale = _prefs.getDouble('btnScale') ?? 1.0; // 读取按钮缩放
+      _btnScale = _prefs.getDouble('btnScale') ?? 1.0;
       _lyricFontSize = _prefs.getDouble('lyricFontSize') ?? 50.0;
       _screenSaverTimeout = _prefs.getInt('screenSaverTimeout') ?? 8;
       _autoPlay = _prefs.getBool('autoPlay') ?? false;
@@ -147,33 +160,28 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       }
     }
 
-    // 👇 💡 全新手术加入：检测首次启动！
     bool isFirstLaunch = _prefs.getBool('isFirstLaunch') ?? true;
     if (isFirstLaunch) {
-      // 必须等页面稍微渲染一下才能弹窗
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _showFirstLaunchSetupDialog();
       });
     }
   }
 
-  // 💡 新车点火：首次开机配置向导弹窗 (定海神针防爆版)
   void _showFirstLaunchSetupDialog() {
     showDialog(
         context: context,
-        barrierDismissible: false, // 杀手锏：不点确定，绝对不让关掉弹窗！
+        barrierDismissible: false,
         builder: (context) {
           return StatefulBuilder(
               builder: (context, setDialogState) {
                 return AlertDialog(
                     backgroundColor: Colors.white.withOpacity(0.95),
-                    // 💡 剥离了 s() 放大，使用固定像素，让弹窗本身绝对稳定
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
                     title: FittedBox(
                         fit: BoxFit.scaleDown,
                         child: Text("🎉 欢迎使用 NAS Car Player", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold))
                     ),
-                    // 💡 加入了滚动防爆盾，万一屏幕极小，也能滚动看完，绝不报黄条！
                     content: SingleChildScrollView(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -190,11 +198,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                                 children: [
                                   Text("全局缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.black87)),
                                   SizedBox(
-                                      width: 250, // 固定滑块宽度，确保手指拖动不偏移
+                                      width: 250,
                                       child: Slider(
                                           value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent,
                                           onChanged: (val) {
-                                            // 💡 弹窗数值刷新，背后的主 UI 实时响应变大变小！
                                             setDialogState(() { _uiScale = val; });
                                             setState(() { _uiScale = val; });
                                           }
@@ -218,7 +225,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))
                                 ),
                                 onPressed: () {
-                                  // 永远记住配置，并打上“已开机”的烙印
                                   _prefs.setDouble('uiScale', _uiScale);
                                   _prefs.setBool('isFirstLaunch', false);
                                   Navigator.pop(context);
@@ -235,7 +241,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     );
   }
 
-  // 💡 修复：只隐藏状态栏，保留底部的空调主页系统导航栏！
   void _applyStatusBar() {
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
@@ -305,15 +310,9 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     if (index != -1) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_playlistScrollController.hasClients) {
-          // 💡 114.0 是你当前播放列表单行项的真实高度
           double itemHeight = s(114.0);
-
-          // 💡 动态获取当前车机列表区域的绝对可见高度（会自动扣除顶栏和AppBar的高度）
           double viewportHeight = _playlistScrollController.position.viewportDimension;
-
-          // 💡 黄金居中公式：目标位置 = (歌曲序号 * 行高) - (可见高度 / 2) + (行高 / 2)
           double targetOffset = (index * itemHeight) - (viewportHeight / 2) + (itemHeight / 2);
-
           _playlistScrollController.animateTo(
             targetOffset.clamp(0.0, _playlistScrollController.position.maxScrollExtent),
             duration: const Duration(milliseconds: 500),
@@ -327,38 +326,25 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   Future<void> _updatePalette(String imageUrl) async {
     try {
       final palette = await PaletteGenerator.fromImageProvider(NetworkImage(imageUrl), maximumColorCount: 20);
-
-      // 💡 改进 1：优先级反转！优先抓取封面里的“最鲜艳的颜色”，如果没有，再抓“主色调”
       Color? targetColor = palette.vibrantColor?.color ?? palette.dominantColor?.color;
 
       if (targetColor != null) {
-        // 将 RGB 颜色转换为 HSL (色相、饱和度、亮度) 模型进行严苛判断
         HSLColor hsl = HSLColor.fromColor(targetColor);
-
-        // 💡 改进 2：色彩拦截器
-        // hsl.saturation < 0.3 表示颜色太“灰”或太“素”
-        // hsl.lightness < 0.15 表示太接近纯黑
-        // hsl.lightness > 0.85 表示太接近纯白
         bool isDullOrGrey = hsl.saturation < 0.3 || hsl.lightness < 0.15 || hsl.lightness > 0.85;
 
         if (isDullOrGrey) {
-          // 如果是被判定为“黑白灰”这种不明显的颜色，直接强制使用我们的招牌大绿！
           _lyricHighlightColor = const Color(0xFF1ED760);
           _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15);
         } else {
-          // 颜色很漂亮鲜艳！正常使用它，但为了确保歌词看得很清楚，把亮度往下压一点点
           _lyricHighlightColor = hsl.withLightness((hsl.lightness - 0.25).clamp(0.0, 1.0)).toColor();
           _bottomGlowColor = targetColor.withOpacity(0.25);
         }
       } else {
-        // 如果图库根本提不出颜色，兜底用绿色
         _lyricHighlightColor = const Color(0xFF1ED760);
         _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15);
       }
-
       if (mounted) setState(() {});
     } catch (_) {
-      // 报错也兜底用绿色
       if (mounted) setState(() {
         _lyricHighlightColor = const Color(0xFF1ED760);
         _bottomGlowColor = const Color(0xFF1ED760).withOpacity(0.15);
@@ -389,7 +375,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   void _updateLyricScroll(Duration currentPos) {
     if (parsedLyrics.isEmpty) return;
 
-    // 💡 核心运算：把你的微调时间（秒转成毫秒），死死地加在当前进度上！
     Duration adjustedPos = Duration(milliseconds: currentPos.inMilliseconds + (_lyricOffset * 1000).toInt());
 
     int newIndex = 0;
@@ -461,14 +446,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       if ((finalLrc == null || finalLrc.isEmpty) && t2.isNotEmpty) finalLrc = await _fetchApiLrc(apiDio, t2, a2);
       if (finalLrc == null || finalLrc.isEmpty) finalLrc = await _fetchApiLrc(apiDio, cleanName, "");
 
-      // 💡 修复：网络歌词在第1秒插入 (Api匹配)
       if (finalLrc != null && finalLrc.isNotEmpty) {
         _parseRawLrcText("[00:01.00]歌词由 千古八方API 提供\n$finalLrc");
       } else {
         _parseRawLrcText("[00:01.00]感谢使用 \n[00:02.00]暂无本地歌词，且未匹配到网络词库");
       }
     } else {
-      // 💡 修复：本地歌词也在第1秒插入纯净版感谢语
       _parseRawLrcText("[00:01.00]感谢使用 \n${finalLrc!}");
     }
 
@@ -505,7 +488,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     String remoteUrl = "${activeAccount!['url']}${Uri.encodeFull(songName)}";
 
     setState(() { currentCoverUrl = defaultCoverUrl; _currentFileName = songName; });
-    // 💡 新增：加载这首专属歌曲的微调记忆（没有就是 0.0）
     _lyricOffset = _prefs.getDouble('lyricOffset_$songName') ?? 0.0;
     _parseRawLrcText("[00:00.00]正在检索本地缓存与网络词库...");
     fetchLyricAndCover(songName);
@@ -528,7 +510,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   @override
   void dispose() {
-    HardwareKeyboard.instance.removeHandler(_handleHardwareKeys); // 💡 清理按键监听
     _playbackSaveTimer?.cancel();
     _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
     _spinController.dispose(); _player.dispose(); super.dispose();
@@ -538,10 +519,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     return ShaderMask(
       shaderCallback: (Rect bounds) => const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black, Colors.black, Colors.transparent], stops: [0.0, 0.05, 0.95, 1.0]).createShader(bounds), blendMode: BlendMode.dstIn,
       child: ListView.builder(
-        // 💡 终极绝杀：将缓存渲染区域拉长到 99999 像素，强行让整首歌的所有歌词节点永远存活！
-        // 这样任意拖动进度条，底层引擎都能 100% 精准锁定那句歌词的绝对位置！
         cacheExtent: 99999,
-
         controller: isMini ? _miniLyricScrollController : _lyricScrollController,
         padding: EdgeInsets.symmetric(vertical: isMini ? s(90.0) : MediaQuery.of(context).size.height / 3.5),
         physics: const BouncingScrollPhysics(), itemCount: parsedLyrics.length,
@@ -566,72 +544,69 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     double sidebarWidth = (currentLeftScreen == 2 && _isLargeMode) ? 0 : s(390);
 
     return PopScope(
-        canPop: false, // 💡 杀手锏：彻底拦截系统的返回按键，不允许销毁软件！
+        canPop: false,
         onPopInvokedWithResult: (bool didPop, dynamic result) {
           if (didPop) return;
-          // 💡 劫持操作：如果按了返回键，就把 App 优雅地推到系统后台挂起！
           platform.invokeMethod('sendToBackground');
         },
         child: Scaffold(
-          body: Stack(
-        children: [
-          AnimatedContainer(duration: const Duration(milliseconds: 800), decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [const Color(0xFFF2F6F9), const Color(0xFFF2F6F9), _bottomGlowColor], stops: const [0.0, 0.4, 1.0]))),
-          Row(
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 350), curve: Curves.easeInOut, width: sidebarWidth,
-                decoration: BoxDecoration(color: Colors.white.withOpacity(0.35)), clipBehavior: Clip.antiAlias,
-                child: SizedBox(
-                  width: s(390),
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(vertical: s(36), horizontal: s(24)),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        GestureDetector(onTap: () { setState(() { currentLeftScreen = 0; _isLargeMode = false; }); _screenSaverTimer?.cancel(); }, child: Row(children: [Icon(Icons.music_note, color: Colors.blueAccent, size: s(54)), SizedBox(width: s(12)), Text('NAS 乐库', style: TextStyle(color: Colors.black87, fontSize: s(30), fontWeight: FontWeight.bold))])),
-                        Expanded(
-                          child: AnimatedAlign(
-                            duration: const Duration(milliseconds: 600), curve: Curves.easeInOut, alignment: (currentPlayingSong == "等待播放" && !isPlaying) ? Alignment.center : Alignment.topCenter,
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                SizedBox(height: s(15)),
-                                // 💡 修正：左边框封面尺寸调整为 160
-                                RotationTransition(turns: _spinController, child: Container(width: s(160), height: s(160), decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: s(20), offset: Offset(0, s(8)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(40), height: s(40), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))),
-                                SizedBox(height: s(15)),
-                                Text(currentPlayingSong, style: TextStyle(fontSize: s(30), fontWeight: FontWeight.bold, color: Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
-                                Text(currentArtist, style: TextStyle(fontSize: s(20), color: Colors.black54)),
-                                if (currentPlayingSong != "等待播放") Expanded(child: GestureDetector(onTap: () { setState(() { currentLeftScreen = 2; _isLargeMode = false; _resetScreenSaverTimer(); }); }, child: Container(margin: EdgeInsets.symmetric(vertical: s(12)), child: _buildScrollingLyrics(context, isMini: true))))
-                              ],
-                            ),
-                          ),
-                        ),
-                        Container(
-                          padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            body: Stack(
+              children: [
+                AnimatedContainer(duration: const Duration(milliseconds: 800), decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [const Color(0xFFF2F6F9), const Color(0xFFF2F6F9), _bottomGlowColor], stops: const [0.0, 0.4, 1.0]))),
+                Row(
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 350), curve: Curves.easeInOut, width: sidebarWidth,
+                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.35)), clipBehavior: Clip.antiAlias,
+                      child: SizedBox(
+                        width: s(390),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: s(36), horizontal: s(24)),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              // 💡 按键全部挂载独立 _btnScale 缩放引擎
-                              IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }),
-                              IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }),
-                              IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }),
-                              IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }),
+                              GestureDetector(onTap: () { setState(() { currentLeftScreen = 0; _isLargeMode = false; }); _screenSaverTimer?.cancel(); }, child: Row(children: [Icon(Icons.music_note, color: Colors.blueAccent, size: s(54)), SizedBox(width: s(12)), Text('NAS 乐库', style: TextStyle(color: Colors.black87, fontSize: s(30), fontWeight: FontWeight.bold))])),
+                              Expanded(
+                                child: AnimatedAlign(
+                                  duration: const Duration(milliseconds: 600), curve: Curves.easeInOut, alignment: (currentPlayingSong == "等待播放" && !isPlaying) ? Alignment.center : Alignment.topCenter,
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(height: s(15)),
+                                      RotationTransition(turns: _spinController, child: Container(width: s(160), height: s(160), decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: s(20), offset: Offset(0, s(8)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(40), height: s(40), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))),
+                                      SizedBox(height: s(15)),
+                                      Text(currentPlayingSong, style: TextStyle(fontSize: s(30), fontWeight: FontWeight.bold, color: Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
+                                      Text(currentArtist, style: TextStyle(fontSize: s(20), color: Colors.black54)),
+                                      if (currentPlayingSong != "等待播放") Expanded(child: GestureDetector(onTap: () { setState(() { currentLeftScreen = 2; _isLargeMode = false; _resetScreenSaverTimer(); }); }, child: Container(margin: EdgeInsets.symmetric(vertical: s(12)), child: _buildScrollingLyrics(context, isMini: true))))
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }),
+                                    IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }),
+                                    IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }),
+                                    IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }),
+                                  ],
+                                ),
+                              ),
                             ],
                           ),
                         ),
-                      ],
+                      ),
                     ),
-                  ),
+
+                    if (sidebarWidth > 0) Container(width: 1, color: Colors.black12),
+
+                    Expanded(child: IndexedStack(index: currentLeftScreen == 2 ? 2 : currentLeftScreen, children: [ _buildNasDashboard(), _buildSongListView(), _buildQQMusicUnifiedStage(), _buildSettingsScreen() ])),
+                  ],
                 ),
-              ),
-
-              if (sidebarWidth > 0) Container(width: 1, color: Colors.black12),
-
-              Expanded(child: IndexedStack(index: currentLeftScreen == 2 ? 2 : currentLeftScreen, children: [ _buildNasDashboard(), _buildSongListView(), _buildQQMusicUnifiedStage(), _buildSettingsScreen() ])),
-            ],
-          ),
-        ],
-      )
+              ],
+            )
         )
     );
   }
@@ -673,11 +648,38 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           }).toList(),
           SizedBox(height: s(48)), Text("播放与显示偏好", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("全局 UI 缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _uiScale = val; }); _prefs.setDouble('uiScale', val); _updateCachedFilesList(); })), Text("${_uiScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: s(20)))])),
-
-          // 💡 独立按键放大倍率设置！
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("全局按钮缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _btnScale, min: 0.5, max: 3.0, divisions: 25, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _btnScale = val; }); _prefs.setDouble('btnScale', val); })), Text("${_btnScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: s(20)))])),
-
           SwitchListTile(title: Text("断电记忆自动播放", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), subtitle: Text("启动时自动从上次断电位置继续播放", style: TextStyle(fontSize: s(20))), value: _autoPlay, onChanged: (val) { setState(() => _autoPlay = val); _prefs.setBool('autoPlay', val); }),
+          // 💡 开机启动控制开关
+          SwitchListTile(
+              title: Text("开机自动运行", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))),
+              subtitle: Text("通电开机后，在后台自动拉起本播放器", style: TextStyle(fontSize: s(20))),
+              value: _startOnBoot,
+              onChanged: (val) {
+                setState(() => _startOnBoot = val);
+                _prefs.setBool('startOnBoot', val);
+              }
+          ),
+          // 💡 只有开启自启时，才显示延迟滑块
+          if (_startOnBoot)
+            Padding(
+                padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(4)),
+                child: Row(
+                    children: [
+                      Text("自启延迟时间: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24), color: Colors.black54)),
+                      Expanded(
+                          child: Slider(
+                              value: _bootDelay.toDouble(), min: 0.0, max: 60.0, divisions: 60, activeColor: Colors.blueAccent.withOpacity(0.7),
+                              onChanged: (val) {
+                                setState(() => _bootDelay = val.toInt());
+                                _prefs.setInt('bootDelay', val.toInt());
+                              }
+                          )
+                      ),
+                      SizedBox(width: s(80), child: Text("$_bootDelay 秒", style: TextStyle(fontSize: s(22), fontWeight: FontWeight.bold), textAlign: TextAlign.right))
+                    ]
+                )
+            ),
           SwitchListTile(title: Text("隐藏系统顶部状态栏", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), subtitle: Text("开启后顶栏隐藏，但保留空调导航底栏", style: TextStyle(fontSize: s(20))), value: !_showStatusBar, onChanged: (val) { setState(() => _showStatusBar = !val); _prefs.setBool('showStatusBar', !val); _applyStatusBar(); }),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("自动进入大屏: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _screenSaverTimeout.toDouble(), min: 0.0, max: 60.0, divisions: 60, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _screenSaverTimeout = val.toInt(); }); _prefs.setInt('screenSaverTimeout', val.toInt()); _resetScreenSaverTimer(); })), Text(_screenSaverTimeout == 0 ? "不自动切换" : "$_screenSaverTimeout s", style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("大屏歌词字号: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _lyricFontSize, min: 30.0, max: 100.0, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _lyricFontSize = val); _prefs.setDouble('lyricFontSize', val); })), Text(_lyricFontSize.toInt().toString(), style: TextStyle(fontSize: s(20)))])),
@@ -716,7 +718,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           children: [
             Positioned(left: s(30), top: s(30), child: IconButton(icon: Icon(Icons.arrow_back_ios, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 1; _screenSaverTimer?.cancel(); _scrollToCurrentSong(); }); })),
 
-            // 💡 图层微创手术 1：先放封面组件（让它乖乖待在底层）
             AnimatedPositioned(
                 duration: const Duration(milliseconds: 450), curve: Curves.easeInOut,
                 right: s(75),
@@ -741,7 +742,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                 )
             ),
 
-            // 💡 图层微创手术 2：后放歌词组件（这样当歌词很长时，就会霸气地叠在黑胶盘上方展示）
             AnimatedPositioned(
               duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, left: s(75),
               top: _isLargeMode ? s(85) : s(90),
@@ -764,7 +764,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                 child: Column(
                   children: [
                     Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); _player.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]),
-                    // 💡 加上 FittedBox 防爆盾！只要按钮太多要溢出，它会自动微缩排版，绝不报错！
                     FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Row(
@@ -803,7 +802,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     );
   }
 
-  // 💡 针对当前单曲的歌词时间轴微调弹窗
   void _showLyricOffsetDialog() {
     showDialog(
         context: context,
@@ -821,12 +819,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                           IconButton(
                               icon: Icon(Icons.fast_rewind, size: s(48), color: Colors.black87),
                               onPressed: () {
-                                setDialogState(() { if (_lyricOffset > -30.0) _lyricOffset -= 0.2; }); // 提前
-                                _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset); // 存入数据库
-
-                                // 💡 杀手锏：强行把缓存索引设为 -1，逼迫底层引擎立刻重新计算位置！
+                                setDialogState(() { if (_lyricOffset > -30.0) _lyricOffset -= 0.2; });
+                                _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset);
                                 setState(() { _currentLyricIndex = -1; });
-                                _updateLyricScroll(_currentPosition); // 手动触发滚动修正！
+                                _updateLyricScroll(_currentPosition);
                               }
                           ),
                           SizedBox(
@@ -840,12 +836,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                           IconButton(
                               icon: Icon(Icons.fast_forward, size: s(48), color: Colors.black87),
                               onPressed: () {
-                                setDialogState(() { if (_lyricOffset < 30.0) _lyricOffset += 0.2; }); // 延后
-                                _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset); // 存入数据库
-
-                                // 💡 杀手锏：强行把缓存索引设为 -1，逼迫底层引擎立刻重新计算位置！
+                                setDialogState(() { if (_lyricOffset < 30.0) _lyricOffset += 0.2; });
+                                _prefs.setDouble('lyricOffset_$_currentFileName', _lyricOffset);
                                 setState(() { _currentLyricIndex = -1; });
-                                _updateLyricScroll(_currentPosition); // 手动触发滚动修正！
+                                _updateLyricScroll(_currentPosition);
                               }
                           ),
                         ]
