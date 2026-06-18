@@ -11,6 +11,10 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
+// 💡 接收命令行强行注射进来的打包时间。如果没有注射（比如平时点调试），就显示"调试版"
+const String appBuildTime = String.fromEnvironment('BUILD_TIME', defaultValue: '本地调试开发版');
+const String appAuthor = "NAS Car Player";
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
@@ -79,9 +83,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   int _screenSaverTimeout = 8, _bootDelay = 5;
   bool _autoPlay = false, _showStatusBar = false, _startOnBoot = false;
 
-  // 💡 双轨制按键绑定变量：存字符串，兼容普通键码和车机原生信号
+  // 💡 双轨制按键绑定变量
   String _triggerNext = "", _triggerPrev = "", _triggerPlayPause = "";
-  String? _currentlyBindingAction; // 记录当前正在绑定哪个功能 ('next', 'prev', 'playPause')
+  String? _currentlyBindingAction;
+
+  // 💡 新增：防抖时间戳，专门对付车机连发Bug
+  DateTime _lastEventTime = DateTime.now();
 
   @override
   void initState() {
@@ -92,36 +99,51 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _spinController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _spinController.stop();
 
-    // 💡 1. 开启全局键盘监听（负责捕捉标准外接键盘、普通蓝牙方控信号）
     HardwareKeyboard.instance.addHandler(_handleGlobalKey);
 
-    // 💡 2. 核心手术：监听来自 Android 底层传来的原生车机信号/媒体键
+    // 🔥🔥🔥 接收原生通道的信号
     platform.setMethodCallHandler((call) async {
-      if (call.method == "onMediaButton") {
-        String action = call.arguments.toString();
-        String triggerTag = "N_$action"; // 💡 N 代表 Native 原生信号
+      // 💡 上帝通道：直接处理安卓底层的纯数字键码（比如 87、88）
+      if (call.method == "onRawKeyDown") {
+        int rawKeyCode = call.arguments as int;
+        String triggerTag = "K_$rawKeyCode"; // K 代表 Android Raw KeyCode
 
-        // 🔥 如果用户正在“绑定界面”，截获信号，自动关闭弹窗！
+        // 1. 如果正在绑定界面，瞬间拦截并关窗！
         if (_currentlyBindingAction != null) {
           _saveBinding(_currentlyBindingAction!, triggerTag);
           return;
         }
 
-        // 💡 正常播放时：优先执行自定义绑定的功能
+        if (_checkDebounce()) return; // 💡 核心防抖：无视 400 毫秒内的“幽灵双击”
+
+        // 2. 正常模式：尝试执行自定义绑定
         if (_executeCustomBinding(triggerTag)) return;
 
-        // 如果没有自定义绑定，走兜底默认行为
-        if (action == "next") {
-          _playNextSong(manual: true); _resetScreenSaverTimer();
-        } else if (action == "prev") {
-          _playPrevSong(); _resetScreenSaverTimer();
-        } else if (action == "play_pause") {
-          _player.playOrPause(); _resetScreenSaverTimer();
-        } else if (action == "play") {
-          _player.play(); _resetScreenSaverTimer();
-        } else if (action == "pause") {
-          _player.pause(); _resetScreenSaverTimer();
+        // 3. 兜底默认行为（如果用户没绑，遇到 87 也默认下一曲）
+        if (rawKeyCode == 87) { _playNextSong(manual: true); _resetScreenSaverTimer(); }
+        else if (rawKeyCode == 88) { _playPrevSong(); _resetScreenSaverTimer(); }
+        else if (rawKeyCode == 85) { _player.playOrPause(); _resetScreenSaverTimer(); }
+      }
+
+      // 💡 备用通道：接收 MediaSession 和车机广播转译的文本
+      else if (call.method == "onMediaButton") {
+        String action = call.arguments.toString();
+        String triggerTag = "N_$action";
+
+        if (_currentlyBindingAction != null) {
+          _saveBinding(_currentlyBindingAction!, triggerTag);
+          return;
         }
+
+        if (_checkDebounce()) return; // 💡 核心防抖
+
+        if (_executeCustomBinding(triggerTag)) return;
+
+        if (action == "next") { _playNextSong(manual: true); _resetScreenSaverTimer(); }
+        else if (action == "prev") { _playPrevSong(); _resetScreenSaverTimer(); }
+        else if (action == "play_pause") { _player.playOrPause(); _resetScreenSaverTimer(); }
+        else if (action == "play") { _player.play(); _resetScreenSaverTimer(); }
+        else if (action == "pause") { _player.pause(); _resetScreenSaverTimer(); }
       }
     });
 
@@ -140,17 +162,31 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   @override
   void dispose() {
-    HardwareKeyboard.instance.removeHandler(_handleGlobalKey); // 💡 关闭按键雷达
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
     _playbackSaveTimer?.cancel();
     _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
     _spinController.dispose(); _player.dispose(); super.dispose();
   }
 
-  // ================= 💡 双轨制按键绑定核心处理逻辑 =================
+  // 💡 新增：统一的按键防抖检查
+  bool _checkDebounce() {
+    final now = DateTime.now();
+    if (now.difference(_lastEventTime).inMilliseconds < 400) return true; // 拦截400ms内的重复触发
+    _lastEventTime = now;
+    return false;
+  }
+
+  // 💡 新增：统一的播放模式切换和记忆保存
+  void _toggleLoopMode() {
+    setState(() { _loopMode = (_loopMode + 1) % 3; });
+    _prefs.setInt('loopMode', _loopMode); // 立即存档
+    _resetScreenSaverTimer();
+  }
 
   bool _handleGlobalKey(KeyEvent event) {
     if (event is KeyDownEvent) {
-      String triggerTag = "F_${event.logicalKey.keyId}"; // 💡 F 代表 Flutter 标准键码
+      if (_checkDebounce()) return true; // 防抖
+      String triggerTag = "F_${event.logicalKey.keyId}";
       if (_executeCustomBinding(triggerTag)) return true;
     }
     return false;
@@ -180,13 +216,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _prefs.setString('triggerPrev', _triggerPrev);
     _prefs.setString('triggerPlayPause', _triggerPlayPause);
 
-    // 🎯 抓到信号的瞬间，强行关闭绑定窗口
+    // 🎯 核心治愈：不管原生还是 Flutter 拦截到，瞬间关闭弹窗！
     if (Navigator.canPop(context)) {
       Navigator.pop(context);
     }
   }
-
-  // =================================================================
 
   Future<void> _initPrefsAndState() async {
     _prefs = await SharedPreferences.getInstance();
@@ -201,10 +235,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       _startOnBoot = _prefs.getBool('startOnBoot') ?? false;
       _bootDelay = _prefs.getInt('bootDelay') ?? 5;
 
-      // 💡 读取保存的绑定键位
-      _triggerNext = _prefs.getString('triggerNext') ?? "";
-      _triggerPrev = _prefs.getString('triggerPrev') ?? "";
-      _triggerPlayPause = _prefs.getString('triggerPlayPause') ?? "";
+      _loopMode = _prefs.getInt('loopMode') ?? 0; // 💡 读取记忆的播放模式
+
+      // 💡 默认绑定车机底层硬码：87(下一曲), 88(上一曲), 85(播放/暂停)
+      _triggerNext = _prefs.getString('triggerNext') ?? "K_87";
+      _triggerPrev = _prefs.getString('triggerPrev') ?? "K_88";
+      _triggerPlayPause = _prefs.getString('triggerPlayPause') ?? "K_85";
 
       String? accJson = _prefs.getString('webdavAccounts');
       if (accJson != null) webdavAccounts = jsonDecode(accJson).cast<Map<String, dynamic>>();
@@ -233,7 +269,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   }
 
   void _showFirstLaunchSetupDialog() {
-    showDialog(context: context, barrierDismissible: false, builder: (context) { return StatefulBuilder(builder: (context, setDialogState) { return AlertDialog(backgroundColor: Colors.white.withOpacity(0.95), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), title: FittedBox(fit: BoxFit.scaleDown, child: Text("🎉 欢迎使用 NAS Car Player", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold))), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [Text("由于车机屏幕比例与分辨率差异巨大，\n请先滑动下方滑块，观察背后界面的变化\n调整到您觉得最舒服的大小：", style: TextStyle(fontSize: 18, height: 1.5, color: Colors.black87), textAlign: TextAlign.center), SizedBox(height: 30), FittedBox(fit: BoxFit.scaleDown, child: Row(children: [Text("全局缩悉: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.black87)), SizedBox(width: 250, child: Slider(value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent, onChanged: (val) { setDialogState(() { _uiScale = val; }); setState(() { _uiScale = val; }); })), SizedBox(width: 65, child: Text("${_uiScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: 20, color: Colors.black87)))]))])), actions: [Center(child: FittedBox(fit: BoxFit.scaleDown, child: ElevatedButton(style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: 40, vertical: 16), backgroundColor: Colors.blueAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { _prefs.setDouble('uiScale', _uiScale); _prefs.setBool('isFirstLaunch', false); Navigator.pop(context); }, child: Text("调整好了，进入车机！", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)))))]); }); });
+    showDialog(context: context, barrierDismissible: false, builder: (context) { return StatefulBuilder(builder: (context, setDialogState) { return AlertDialog(backgroundColor: Colors.white.withOpacity(0.95), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), title: FittedBox(fit: BoxFit.scaleDown, child: Text("🎉 欢迎使用 NAS Car Player", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold))), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [Text("由于车机屏幕比例与分辨率差异巨大，\n请先滑动下方滑块，观察背后界面的变化\n调整到您觉得最舒服的大小：", style: TextStyle(fontSize: 18, height: 1.5, color: Colors.black87), textAlign: TextAlign.center), SizedBox(height: 30), FittedBox(fit: BoxFit.scaleDown, child: Row(children: [Text("全局缩放: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.black87)), SizedBox(width: 250, child: Slider(value: _uiScale, min: 0.8, max: 2.5, divisions: 17, activeColor: Colors.blueAccent, onChanged: (val) { setDialogState(() { _uiScale = val; }); setState(() { _uiScale = val; }); })), SizedBox(width: 65, child: Text("${_uiScale.toStringAsFixed(1)}x", style: TextStyle(fontSize: 20, color: Colors.black87)))]))])), actions: [Center(child: FittedBox(fit: BoxFit.scaleDown, child: ElevatedButton(style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: 40, vertical: 16), backgroundColor: Colors.blueAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { _prefs.setDouble('uiScale', _uiScale); _prefs.setBool('isFirstLaunch', false); Navigator.pop(context); }, child: Text("调整好了，进入车机！", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)))))]); }); });
   }
 
   void _applyStatusBar() { SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: _showStatusBar ? SystemUiOverlay.values : [SystemUiOverlay.bottom]); }
@@ -292,7 +328,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   Future<String?> _fetchApiLrc(Dio dio, String title, String artist) async { try { var res = await dio.get("https://tools.rangotec.com/api/anon/lrc", queryParameters: {"title": title, "artist": artist, "od": "asc"}); var data = res.data is String ? jsonDecode(res.data) : res.data; if (data['code'] == 200 && data['data'] != null && data['data'].isNotEmpty) return data['data'][0]['lrc']; } catch (_) {} return null; }
   Future<String?> _fetchApiCover(Dio dio, String title, String artist) async { try { var res = await dio.get("https://itunes.apple.com/search", queryParameters: {"term": "$artist $title".trim(), "limit": 1, "entity": "song", "country": "cn"}); var data = res.data is String ? jsonDecode(res.data) : res.data; if (data['resultCount'] > 0) return data['results'][0]['artworkUrl100'].replaceAll('100x100bb.jpg', '600x600bb.jpg'); } catch (_) {} return null; }
 
-  // 💡 已回退到纯靠文件名的稳定解析版
   Future<void> fetchLyricAndCover(String songName) async {
     if (activeAccount == null) return; String pureName = songName.replaceAll(RegExp(r'\.[^.]+$'), ''); String auth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
     String? finalLrc; bool isLocal = false;
@@ -353,7 +388,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                             children: [
                               GestureDetector(onTap: () { setState(() { currentLeftScreen = 0; _isLargeMode = false; }); _screenSaverTimer?.cancel(); }, child: Row(children: [Icon(Icons.music_note, color: Colors.blueAccent, size: s(54)), SizedBox(width: s(12)), Text('NAS 乐库', style: TextStyle(color: Colors.black87, fontSize: s(30), fontWeight: FontWeight.bold))])),
                               Expanded(child: AnimatedAlign(duration: const Duration(milliseconds: 600), curve: Curves.easeInOut, alignment: (currentPlayingSong == "等待播放" && !isPlaying) ? Alignment.center : Alignment.topCenter, child: Column(mainAxisSize: MainAxisSize.min, children: [SizedBox(height: s(15)), RotationTransition(turns: _spinController, child: Container(width: s(160), height: s(160), decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: s(20), offset: Offset(0, s(8)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(40), height: s(40), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))), SizedBox(height: s(15)), Text(currentPlayingSong, style: TextStyle(fontSize: s(30), fontWeight: FontWeight.bold, color: Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center), Text(currentArtist, style: TextStyle(fontSize: s(20), color: Colors.black54)), if (currentPlayingSong != "等待播放") Expanded(child: GestureDetector(onTap: () { setState(() { currentLeftScreen = 2; _isLargeMode = false; _resetScreenSaverTimer(); }); }, child: Container(margin: EdgeInsets.symmetric(vertical: s(12)), child: _buildScrollingLyrics(context, isMini: true))))]))),
-                              Container(padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))), child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); })])),
+                              Container(padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))), child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: _toggleLoopMode), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); })])),
                             ],
                           ),
                         ),
@@ -412,17 +447,29 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           _buildKeyBindRow("下一曲", "next", _triggerNext, (val) { setState(()=>_triggerNext=val); }),
           _buildKeyBindRow("播放/暂停", "playPause", _triggerPlayPause, (val) { setState(()=>_triggerPlayPause=val); }),
           SizedBox(height: s(60)),
+          // 💡 专属版权与版本号页脚
+          Divider(color: Colors.black12, height: s(60)),
+          Center(
+            child: Column(
+              children: [
+                Text(appAuthor, style: TextStyle(fontSize: s(22), fontWeight: FontWeight.bold, color: Colors.black54)),
+                SizedBox(height: s(8)),
+                Text("Build: $appBuildTime", style: TextStyle(fontSize: s(18), color: Colors.black38, fontFamily: 'monospace')),
+                SizedBox(height: s(40)), // 底部防遮挡留白
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
-  // 💡 双轨制绑定行 UI 渲染
   Widget _buildKeyBindRow(String label, String actionKey, String currentTrigger, Function(String) onBind) {
     String displayValue = "未绑定";
     if (currentTrigger.isNotEmpty) {
-      if (currentTrigger.startsWith("F_")) { displayValue = "普通键码: ${currentTrigger.substring(2)}"; }
-      else if (currentTrigger.startsWith("N_")) { displayValue = "原生媒体/车机信号: ${currentTrigger.substring(2)}"; }
+      if (currentTrigger.startsWith("F_")) { displayValue = "键码: ${currentTrigger.substring(2)}"; }
+      else if (currentTrigger.startsWith("N_")) { displayValue = "原生媒体: ${currentTrigger.substring(2)}"; }
+      else if (currentTrigger.startsWith("K_")) { displayValue = "车机底层硬码: ${currentTrigger.substring(2)}"; }
     }
     return Padding(
         padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
@@ -446,7 +493,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     );
   }
 
-  // 💡 双轨制智能绑定弹窗（支持物理按键与底层原生 ADB 信号截获自动关闭）
   void _showBindingDialog(String label, String actionKey) {
     showDialog(
         context: context, barrierDismissible: false,
@@ -455,7 +501,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
               autofocus: true,
               onKeyEvent: (node, event) {
                 if (event is KeyDownEvent) {
-                  String triggerTag = "F_${event.logicalKey.keyId}"; // 如果捕捉到标准键盘信号
+                  String triggerTag = "F_${event.logicalKey.keyId}";
                   _saveBinding(actionKey, triggerTag);
                   return KeyEventResult.handled;
                 }
@@ -463,7 +509,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
               },
               child: AlertDialog(
                   title: Text("正在绑定 [$label]", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold)),
-                  content: Text("请按一下方向盘实体键，或发送 ADB 媒体指令...\n(系统捕获到任意标准按键或车机后台广播后，此窗口会自动关闭)", style: TextStyle(fontSize: s(22), height: 1.5, color: Colors.blueAccent)),
+                  content: Text("请按一下方向盘实体键...\n(系统在最底层捕获到按键信号后，此窗口将自动关闭)", style: TextStyle(fontSize: s(22), height: 1.5, color: Colors.blueAccent)),
                   actions: [
                     TextButton(
                         onPressed: () { setState(() { _currentlyBindingAction = null; }); Navigator.pop(context); },
@@ -495,7 +541,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
             Positioned(left: s(30), top: s(30), child: IconButton(icon: Icon(Icons.arrow_back_ios, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 1; _screenSaverTimer?.cancel(); _scrollToCurrentSong(); }); })),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, right: s(75), bottom: _isLargeMode ? s(75) : s(225), width: _isLargeMode ? s(240) : s(220), height: _isLargeMode ? s(240) : s(220), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 1.0 : 0.0, child: RotationTransition(turns: _isLargeMode ? _spinController : const AlwaysStoppedAnimation(0), child: AnimatedContainer(duration: const Duration(milliseconds: 450), decoration: BoxDecoration(borderRadius: BorderRadius.circular(s(300)), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: s(25), offset: Offset(0, s(10)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(45), height: s(45), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))))),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, left: s(75), top: _isLargeMode ? s(85) : s(90), bottom: _isLargeMode ? s(60) : s(240), width: s(750), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(currentPlayingSong, style: TextStyle(fontSize: _isLargeMode ? s(40) : s(34), fontWeight: FontWeight.bold, color: Colors.black87)), Text(currentArtist, style: TextStyle(fontSize: s(18), color: Colors.black54)), SizedBox(height: s(15)), Expanded(child: _buildScrollingLyrics(context, isMini: false))])),
-            AnimatedPositioned(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut, left: s(75), right: s(75), bottom: _isLargeMode ? s(-180) : s(30), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 0.0 : 1.0, child: Column(children: [Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); _player.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]), FittedBox(fit: BoxFit.scaleDown, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { setState(() { _loopMode = (_loopMode + 1) % 3; }); _resetScreenSaverTimer(); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), SizedBox(width: s(24)), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(100) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.timer), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _showLyricOffsetDialog(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.queue_music), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () async { if (playingAccount != null && activeAccount != playingAccount) { setState(() { activeAccount = playingAccount; }); await fetchSongsFromWebDav(silent: true); } setState(() { currentLeftScreen = 1; _isLargeMode = false; }); _screenSaverTimer?.cancel(); Future.delayed(const Duration(milliseconds: 300), () => _scrollToCurrentSong()); })]))]))),
+            AnimatedPositioned(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut, left: s(75), right: s(75), bottom: _isLargeMode ? s(-180) : s(30), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 0.0 : 1.0, child: Column(children: [Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); _player.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]), FittedBox(fit: BoxFit.scaleDown, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: _toggleLoopMode), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), SizedBox(width: s(24)), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(100) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _player.playOrPause(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.timer), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _showLyricOffsetDialog(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.queue_music), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () async { if (playingAccount != null && activeAccount != playingAccount) { setState(() { activeAccount = playingAccount; }); await fetchSongsFromWebDav(silent: true); } setState(() { currentLeftScreen = 1; _isLargeMode = false; }); _screenSaverTimer?.cancel(); Future.delayed(const Duration(milliseconds: 300), () => _scrollToCurrentSong()); })]))]))),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, right: s(75), top: _isLargeMode ? s(35) : s(-240), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 1.0 : 0.0, child: Text(_currentTimeString, style: TextStyle(fontSize: s(160), fontWeight: FontWeight.w200, color: Colors.black87, fontFamily: 'monospace')))),
           ],
         ),
