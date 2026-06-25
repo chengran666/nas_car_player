@@ -42,6 +42,7 @@ dependencies:
   palette_generator: ^0.3.3+7
   shared_preferences: ^2.5.5
   path_provider: ^2.1.5
+  audio_service: ^0.18.18
 dev_dependencies:
   flutter_test:
     sdk: flutter

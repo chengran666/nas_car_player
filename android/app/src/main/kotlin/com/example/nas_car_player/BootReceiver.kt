@@ -28,7 +28,8 @@ class BootReceiver : BroadcastReceiver() {
                 if (bootDelaySeconds <= 0L) {
                     // Toast.makeText(context, "NAS Player: 开机启动，立刻拉起...", Toast.LENGTH_SHORT).show()
                     val launchIntent = Intent(context, MainActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        // 💡 增加 SINGLE_TOP 防止重复拉起多个 MainActivity 实例
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     }
                     context.startActivity(launchIntent)
                 } else {
@@ -36,7 +37,8 @@ class BootReceiver : BroadcastReceiver() {
                     Toast.makeText(context, "NAS Player: 系统已通电，将在 ${bootDelaySeconds} 秒后启动", Toast.LENGTH_LONG).show()
 
                     val launchIntent = Intent(context, MainActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        // 💡 增加 SINGLE_TOP 防止重复拉起多个 MainActivity 实例
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     }
 
                     // 兼容不同版本 Android 的防弹 PendingIntent
