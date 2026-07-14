@@ -1,9 +1,12 @@
 package com.example.nas_car_player // ⚠️注意保留你自己的包名
 
+import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.KeyEvent
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -80,5 +83,27 @@ class MainActivity: AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    // 💡 关键修复：BYD 等车机在后台可能直接分发 KeyEvent 而非走 MediaSession 框架
+    // 在 Activity 层拦截方向盘多媒体按键，通过 AudioManager 转发给当前活跃的 MediaSession
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_STOP -> {
+                if (event != null) {
+                    try {
+                        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        audioManager.dispatchMediaKeyEvent(event)
+                    } catch (_: Exception) {}
+                }
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }

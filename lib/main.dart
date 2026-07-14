@@ -29,11 +29,14 @@ Future<void> main() async {
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.nascarplayer.channel.audio',
         androidNotificationChannelName: 'NAS Car Player',
-        androidNotificationOngoing: true, // 保持强制保活
+        // 💡 改为 false：配合 androidStopForegroundOnPause=false，绕过 audio_service 编译断言
+        // 通知变为可滑动关闭，但前台服务永不停止，确保 BYD 等车机后台多媒体按键可达
+        androidNotificationOngoing: false,
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/ic_launcher',
-        // 💡 必须改为 true：暂停时允许系统停止前台保活，解决编译断言冲突
-        androidStopForegroundOnPause: true,
+        // 💡 关键修复：暂停时也不停止前台服务，保持 MediaSession 始终活跃
+        // 这样方向盘多媒体按钮在后台任何时候都能被系统路由到本 app
+        androidStopForegroundOnPause: false,
         androidResumeOnClick: true,
       ),
     ) as MediaKitAudioHandler;
@@ -685,8 +688,9 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> onTaskRemoved() async {
-    await stop();
-    exit(0);
+    // 💡 关键修复：不调用 stop() 和 exit(0)
+    // BYD 等车机在切换应用时可能触发 onTaskRemoved，如果退出进程则 MediaSession 被销毁
+    // 保持进程存活，让 MediaSession 持续响应后台方向盘多媒体按键
   }
 
   @override
