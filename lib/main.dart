@@ -12,12 +12,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-const String appBuildTime = String.fromEnvironment('BUILD_TIME', defaultValue: '纯净版 (方案B)');
+const String appBuildTime = String.fromEnvironment('BUILD_TIME', defaultValue: '终极后台保活版');
 const String appAuthor = "NAS Car Player";
 
 late Player globalPlayer;
 late MediaKitAudioHandler audioHandler;
-final StreamController<String> globalAudioActionStream = StreamController<String>.broadcast();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,13 +29,15 @@ Future<void> main() async {
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.nascarplayer.channel.audio',
         androidNotificationChannelName: 'NAS Car Player',
-        androidNotificationOngoing: false,
+        androidNotificationOngoing: true, // 保持强制保活
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/ic_launcher',
-        androidStopForegroundOnPause: false,
+        // 💡 必须改为 true：暂停时允许系统停止前台保活，解决编译断言冲突
+        androidStopForegroundOnPause: true,
         androidResumeOnClick: true,
       ),
-    );
+    ) as MediaKitAudioHandler;
+
     runApp(const NasCarPlayerApp());
   } catch (e, stackTrace) {
     runApp(MaterialApp(
@@ -117,7 +118,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   String _bootOtherAppPackage = '', _bootOtherAppLabel = '';
   int _bootOtherAppDelay = 10;
 
-  DateTime _lastEventTime = DateTime.now(); // 保留防抖
+  DateTime _lastEventTime = DateTime.now();
 
   @override
   void initState() {
@@ -130,13 +131,17 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _spinController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _spinController.stop();
 
-    // 💡 方案B：唯一的音频控制流入口，AudioService 在后台接管后会推送到这里
-    globalAudioActionStream.stream.listen((event) {
-      if (_checkDebounce()) return; // 终极防抖，防止系统连发两次点击
-      if (event == 'next') { _playNextSong(manual: true); _resetScreenSaverTimer(); }
-      else if (event == 'prev') { _playPrevSong(); _resetScreenSaverTimer(); }
-      else if (event == 'playPause') { globalPlayer.playOrPause(); _resetScreenSaverTimer(); }
-    });
+    // 💡 修复4：废弃容易在后台被挂起的 Stream，直接挂载底层方法的真·回调
+    audioHandler.onNextCallback = () {
+      if (_checkDebounce()) return;
+      _playNextSong(manual: true);
+      _resetScreenSaverTimer();
+    };
+    audioHandler.onPrevCallback = () {
+      if (_checkDebounce()) return;
+      _playPrevSong();
+      _resetScreenSaverTimer();
+    };
 
     globalPlayer.stream.playing.listen((p) {
       if (mounted) {
@@ -378,19 +383,23 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     if (activeAccount == null) return; playingAccount = activeAccount; String rawAuth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}"; String remoteUrl = "${activeAccount!['url']}${Uri.encodeFull(songName)}";
     setState(() { currentCoverUrl = defaultCoverUrl; _currentFileName = songName; }); _lyricOffset = _prefs.getDouble('lyricOffset_$songName') ?? 0.0; _parseRawLrcText("[00:00.00]正在检索本地缓存与网络词库...");
 
+    // 💡 修复3：前置占位。在开始缓慢的网络请求前，立刻告诉系统我们正在切歌，并保持缓冲状态，防止系统认为焦点死亡
+    String pure = songName.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), '');
+    if (pure.contains('-')) { var p = pure.split('-'); currentArtist = p[0].trim(); currentPlayingSong = p[1].trim(); }
+    else { currentPlayingSong = pure.trim(); currentArtist = "私人乐库"; }
+
+    audioHandler.updateCurrentSong(currentPlayingSong, currentArtist, currentCoverUrl);
+    audioHandler.forceBuffering(); // 关键！强制告诉系统“我在加载”，锁死焦点
+
     fetchLyricAndCover(songName);
 
     try {
       String playPath = await _getPlayableUrl(songName, remoteUrl, rawAuth);
       await globalPlayer.open(Media(playPath, httpHeaders: playPath.startsWith('http') ? {'Authorization': rawAuth} : {}));
       setState(() {
-        String pure = songName.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), '');
-        if (pure.contains('-')) { var p = pure.split('-'); currentArtist = p[0].trim(); currentPlayingSong = p[1].trim(); }
-        else { currentPlayingSong = pure.trim(); currentArtist = "私人乐库"; }
         currentLeftScreen = 2; _isLargeMode = false;
       });
 
-      audioHandler.updateCurrentSong(currentPlayingSong, currentArtist, currentCoverUrl);
       _resetScreenSaverTimer();
     } catch (_) {}
   }
@@ -592,8 +601,20 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
   final Player player;
   MediaItem? _currentMediaItem;
 
+  // 💡 修复4：彻底抛弃 Stream，使用最原始可靠的函数回调
+  void Function()? onNextCallback;
+  void Function()? onPrevCallback;
+
   MediaKitAudioHandler(this.player) {
+    // 💡 修复2：启动时立刻塞入一个默认焦点，告诉 Android 系统这里有个活跃的媒体服务
+    _currentMediaItem = const MediaItem(
+      id: 'init',
+      title: '等待播放',
+      artist: 'NAS Car Player',
+    );
+    mediaItem.add(_currentMediaItem!);
     _broadcastState(false);
+
     player.stream.playing.listen((playing) {
       _broadcastState(playing);
     });
@@ -625,6 +646,13 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
       updatePosition: player.state.position,
       bufferedPosition: player.state.position,
       speed: 1.0,
+    ));
+  }
+
+  // 💡 修复3：切歌加载期间强制保持缓冲状态，死死拉住媒体焦点
+  void forceBuffering() {
+    playbackState.add(playbackState.value.copyWith(
+      processingState: AudioProcessingState.buffering,
     ));
   }
 
@@ -661,16 +689,14 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
     exit(0);
   }
 
-  // 💡 方案B：拦截系统发送的 Next 意图，转交给 UI 层的 Stream
   @override
   Future<void> skipToNext() async {
-    globalAudioActionStream.add('next');
+    if (onNextCallback != null) onNextCallback!();
   }
 
-  // 💡 方案B：拦截系统发送的 Prev 意图，转交给 UI 层的 Stream
   @override
   Future<void> skipToPrevious() async {
-    globalAudioActionStream.add('prev');
+    if (onPrevCallback != null) onPrevCallback!();
   }
 
   @override
