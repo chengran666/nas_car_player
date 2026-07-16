@@ -591,65 +591,74 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         title: Text(activeAccount != null ? activeAccount!['name'] : '群晖歌单',
           style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold)),
       ),
-      body: isLoading ? const Center(child: CircularProgressIndicator()) : ListView.builder(
-        controller: _playlistScrollController,
-        itemCount: realNasSongs.length,
-        itemBuilder: (context, index) {
-          String songName = realNasSongs[index];
-          bool isCurrent = songName == _currentFileName;
-          bool isCached = _cachedFiles.contains(songName);
-          bool isSliding = _slidingSongName == songName;
-          String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘';
+      body: isLoading ? const Center(child: CircularProgressIndicator()) : GestureDetector(
+        onTap: () {
+          // 点击空白区域关闭滑动状态
+          if (_slidingSongName != null) {
+            setState(() => _slidingSongName = null);
+          }
+        },
+        child: ListView.builder(
+          controller: _playlistScrollController,
+          itemCount: realNasSongs.length,
+          itemBuilder: (context, index) {
+            String songName = realNasSongs[index];
+            bool isCurrent = songName == _currentFileName;
+            bool isCached = _cachedFiles.contains(songName);
+            bool isSliding = _slidingSongName == songName;
+            String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘';
 
-          Widget songItem = Container(
-            height: s(114.0),
-            color: isCurrent ? _lyricHighlightColor.withOpacity(0.12) : Colors.transparent,
-            child: Center(
-              child: ListTile(
-                leading: SizedBox(
-                  width: s(48),
-                  child: isCurrent
-                    ? Icon(Icons.equalizer, color: _lyricHighlightColor, size: s(36))
-                    : Text('${index + 1}', style: TextStyle(fontSize: s(24), color: Colors.black54), textAlign: TextAlign.center),
+            Widget songItem = Container(
+              height: s(114.0),
+              color: isCurrent ? _lyricHighlightColor.withOpacity(0.12) : Colors.transparent,
+              child: Center(
+                child: ListTile(
+                  leading: SizedBox(
+                    width: s(48),
+                    child: isCurrent
+                      ? Icon(Icons.equalizer, color: _lyricHighlightColor, size: s(36))
+                      : Text('${index + 1}', style: TextStyle(fontSize: s(24), color: Colors.black54), textAlign: TextAlign.center),
+                  ),
+                  title: Text(songName.replaceAll(RegExp(r'\.[^.]+$'), ''),
+                    style: TextStyle(fontSize: s(26), fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+                      color: isCurrent ? _lyricHighlightColor : Colors.black87)),
+                  subtitle: Text(isCached ? '来自 $nasName / 已缓存' : '来自 $nasName',
+                    style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)),
+                  trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline,
+                    color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)),
+                  onTap: () {
+                    if (isSliding) {
+                      setState(() => _slidingSongName = null);
+                    } else {
+                      playNasSong(songName);
+                    }
+                  },
                 ),
-                title: Text(songName.replaceAll(RegExp(r'\.[^.]+$'), ''),
-                  style: TextStyle(fontSize: s(26), fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
-                    color: isCurrent ? _lyricHighlightColor : Colors.black87)),
-                subtitle: Text(isCached ? '来自 $nasName / 已缓存' : '来自 $nasName',
-                  style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)),
-                trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline,
-                  color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)),
-                onTap: () {
-                  if (isSliding) {
-                    setState(() => _slidingSongName = null);
-                  } else {
-                    playNasSong(songName);
-                  }
-                },
               ),
-            ),
-          );
+            );
 
-          if (!isCached) return songItem;
+            if (!isCached) return songItem;
 
-          return GestureDetector(
-            onHorizontalDragUpdate: (details) {
-              if (details.delta.dx < -5 && !isSliding) {
-                setState(() {
-                  _slidingSongName = songName;
-                });
-              }
-            },
-            child: Stack(
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  margin: EdgeInsets.only(right: isSliding ? s(120) : 0),
-                  child: songItem,
-                ),
-                if (isSliding)
-                  Positioned(
-                    right: 0,
+            return GestureDetector(
+              onHorizontalDragUpdate: (details) {
+                if (details.delta.dx < -5 && !isSliding) {
+                  setState(() => _slidingSongName = songName);
+                } else if (details.delta.dx > 5 && isSliding) {
+                  setState(() => _slidingSongName = null);
+                }
+              },
+              child: Stack(
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                    margin: EdgeInsets.only(right: isSliding ? s(120) : 0),
+                    child: songItem,
+                  ),
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                    right: isSliding ? 0 : s(-120),
                     top: 0,
                     bottom: 0,
                     width: s(120),
@@ -688,10 +697,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                       ),
                     ),
                   ),
-              ],
-            ),
-          );
-        },
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
