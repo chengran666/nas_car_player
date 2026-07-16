@@ -77,6 +77,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   bool isLoading = false;
   List<String> realNasSongs = [];
   Set<String> _cachedFiles = {};
+  String? _slidingSongName; // 当前正在滑动的歌曲名称
 
   String currentPlayingSong = "等待播放", currentArtist = "私人乐库", _currentFileName = "";
   bool isPlaying = false;
@@ -585,7 +586,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         elevation: 0,
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: Colors.black87, size: s(36)),
-          onPressed: () { setState(() { currentLeftScreen = 0; }); },
+          onPressed: () { setState(() { currentLeftScreen = 0; _slidingSongName = null; }); },
         ),
         title: Text(activeAccount != null ? activeAccount!['name'] : '群晖歌单',
           style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold)),
@@ -597,6 +598,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           String songName = realNasSongs[index];
           bool isCurrent = songName == _currentFileName;
           bool isCached = _cachedFiles.contains(songName);
+          bool isSliding = _slidingSongName == songName;
           String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘';
 
           Widget songItem = Container(
@@ -617,43 +619,78 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                   style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)),
                 trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline,
                   color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)),
-                onTap: () => playNasSong(songName),
+                onTap: () {
+                  if (isSliding) {
+                    setState(() => _slidingSongName = null);
+                  } else {
+                    playNasSong(songName);
+                  }
+                },
               ),
             ),
           );
 
-          if (isCached) {
-            return Dismissible(
-              key: Key(songName),
-              direction: DismissDirection.endToStart,
-              background: Container(
-                alignment: Alignment.centerRight,
-                padding: EdgeInsets.only(right: s(24)),
-                color: Colors.redAccent,
-                child: Icon(Icons.delete, color: Colors.white, size: s(36)),
-              ),
-              confirmDismiss: (direction) async {
-                return await showDialog<bool>(
-                  context: context,
-                  builder: (context) => AlertDialog(
-                    title: Text('清除缓存', style: TextStyle(fontSize: s(24))),
-                    content: Text('确定要清除「${songName.replaceAll(RegExp(r'\.[^.]+$'), '')}」的缓存吗？',
-                      style: TextStyle(fontSize: s(22))),
-                    actions: [
-                      TextButton(onPressed: () => Navigator.pop(context, false), child: Text('取消', style: TextStyle(fontSize: s(20)))),
-                      TextButton(onPressed: () => Navigator.pop(context, true), child: Text('清除', style: TextStyle(fontSize: s(20), color: Colors.redAccent))),
-                    ],
-                  ),
-                );
-              },
-              onDismissed: (direction) {
-                _deleteCacheFile(songName);
-              },
-              child: songItem,
-            );
-          }
+          if (!isCached) return songItem;
 
-          return songItem;
+          return GestureDetector(
+            onHorizontalDragUpdate: (details) {
+              if (details.delta.dx < -5 && !isSliding) {
+                setState(() {
+                  _slidingSongName = songName;
+                });
+              }
+            },
+            child: Stack(
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  margin: EdgeInsets.only(right: isSliding ? s(120) : 0),
+                  child: songItem,
+                ),
+                if (isSliding)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: s(120),
+                    child: GestureDetector(
+                      onTap: () {
+                        showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: Text('清除缓存', style: TextStyle(fontSize: s(24))),
+                            content: Text('确定要清除「${songName.replaceAll(RegExp(r'\.[^.]+$'), '')}」的缓存吗？',
+                              style: TextStyle(fontSize: s(22))),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(context, false), child: Text('取消', style: TextStyle(fontSize: s(20)))),
+                              TextButton(onPressed: () => Navigator.pop(context, true), child: Text('清除', style: TextStyle(fontSize: s(20), color: Colors.redAccent))),
+                            ],
+                          ),
+                        ).then((confirmed) {
+                          if (confirmed == true) {
+                            _deleteCacheFile(songName);
+                            setState(() => _slidingSongName = null);
+                          }
+                        });
+                      },
+                      child: Container(
+                        color: Colors.redAccent,
+                        child: Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.delete, color: Colors.white, size: s(32)),
+                              SizedBox(height: s(4)),
+                              Text('清除缓存', style: TextStyle(color: Colors.white, fontSize: s(16))),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
         },
       ),
     );
