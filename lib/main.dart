@@ -82,6 +82,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   String currentPlayingSong = "等待播放", currentArtist = "私人乐库", _currentFileName = "";
   bool isPlaying = false;
   int _loopMode = 0;
+  List<String> _shuffledPlaylist = []; // 随机播放列表
+  int _currentIndexInShuffled = -1; // 当前在随机列表中的位置
 
   String defaultCoverUrl = "https://images.unsplash.com/photo-1493225457124-a1a2a5ea3eb8?q=80&w=600&auto=format&fit=crop";
   late String currentCoverUrl;
@@ -187,7 +189,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   }
 
   void _toggleLoopMode() {
-    setState(() { _loopMode = (_loopMode + 1) % 3; });
+    setState(() {
+      _loopMode = (_loopMode + 1) % 3;
+      if (_loopMode == 2) {
+        _generateShuffledPlaylist();
+      }
+    });
     _prefs.setInt('loopMode', _loopMode);
     _resetScreenSaverTimer();
   }
@@ -330,12 +337,47 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     try { await Dio().download(remoteUrl, localFile.path, options: Options(headers: {'Authorization': auth})); _updateCachedFilesList(); final files = cacheDir.listSync().whereType<File>().toList(); double totalSize = 0; for (var f in files) totalSize += f.lengthSync(); double limitBytes = _maxCacheGB * 1024 * 1024 * 1024; if (totalSize > limitBytes) { files.sort((a, b) => a.lastModifiedSync().compareTo(b.lastModifiedSync())); for (var f in files) { if (totalSize <= limitBytes) break; totalSize -= f.lengthSync(); f.deleteSync(); } _updateCachedFilesList(); } } catch (_) {}
   }
 
+  void _generateShuffledPlaylist() {
+    _shuffledPlaylist = List.from(realNasSongs);
+    _shuffledPlaylist.shuffle();
+    _currentIndexInShuffled = -1;
+  }
+
   void _playNextSong({bool manual = false}) {
-    if (realNasSongs.isEmpty) return; int idx = realNasSongs.indexOf(_currentFileName); if (idx == -1) idx = 0; int next = _loopMode == 2 ? Random().nextInt(realNasSongs.length) : (_loopMode == 1 && !manual ? idx : (idx + 1) % realNasSongs.length); playNasSong(realNasSongs[next]);
+    if (realNasSongs.isEmpty) return;
+    
+    if (_loopMode == 2) {
+      // 随机播放模式
+      if (_shuffledPlaylist.isEmpty || _shuffledPlaylist.length != realNasSongs.length) {
+        _generateShuffledPlaylist();
+      }
+      _currentIndexInShuffled = (_currentIndexInShuffled + 1) % _shuffledPlaylist.length;
+      playNasSong(_shuffledPlaylist[_currentIndexInShuffled]);
+    } else {
+      // 顺序播放或单曲循环模式
+      int idx = realNasSongs.indexOf(_currentFileName);
+      if (idx == -1) idx = 0;
+      int next = (_loopMode == 1 && !manual) ? idx : (idx + 1) % realNasSongs.length;
+      playNasSong(realNasSongs[next]);
+    }
   }
 
   void _playPrevSong() {
-    if (realNasSongs.isEmpty) return; int idx = realNasSongs.indexOf(_currentFileName); int prev = _loopMode == 2 ? Random().nextInt(realNasSongs.length) : (idx == -1 ? 0 : (idx - 1 + realNasSongs.length) % realNasSongs.length); playNasSong(realNasSongs[prev]);
+    if (realNasSongs.isEmpty) return;
+    
+    if (_loopMode == 2) {
+      // 随机播放模式
+      if (_shuffledPlaylist.isEmpty || _shuffledPlaylist.length != realNasSongs.length) {
+        _generateShuffledPlaylist();
+      }
+      _currentIndexInShuffled = (_currentIndexInShuffled - 1 + _shuffledPlaylist.length) % _shuffledPlaylist.length;
+      playNasSong(_shuffledPlaylist[_currentIndexInShuffled]);
+    } else {
+      // 顺序播放或单曲循环模式
+      int idx = realNasSongs.indexOf(_currentFileName);
+      int prev = idx == -1 ? 0 : (idx - 1 + realNasSongs.length) % realNasSongs.length;
+      playNasSong(realNasSongs[prev]);
+    }
   }
 
   void _scrollToCurrentSong() {
@@ -388,7 +430,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   Future<void> fetchSongsFromWebDav({bool silent = false}) async {
     if (activeAccount == null) return; if (!silent) setState(() => isLoading = true); String auth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}";
-    try { var response = await Dio().request(activeAccount!['url'], options: Options(method: 'PROPFIND', headers: {'Authorization': auth, 'Depth': '1'})); RegExp regExp = RegExp(r'<D:href>([^<]+\.(mp3|flac|wav|m4a|aac))<\/D:href>', caseSensitive: false); Iterable<Match> matches = regExp.allMatches(response.data.toString()); List<String> tempSongs = []; for (var match in matches) { String cleanName = Uri.decodeComponent(match.group(1) ?? "").split('/').last.replaceAll('&amp;', '&'); if (cleanName.isNotEmpty && !tempSongs.contains(cleanName)) tempSongs.add(cleanName); } setState(() { realNasSongs = tempSongs; isLoading = false; }); _updateCachedFilesList(); } catch (e) { if (!silent) setState(() => isLoading = false); }
+    try { var response = await Dio().request(activeAccount!['url'], options: Options(method: 'PROPFIND', headers: {'Authorization': auth, 'Depth': '1'})); RegExp regExp = RegExp(r'<D:href>([^<]+\.(mp3|flac|wav|m4a|aac))<\/D:href>', caseSensitive: false); Iterable<Match> matches = regExp.allMatches(response.data.toString()); List<String> tempSongs = []; for (var match in matches) { String cleanName = Uri.decodeComponent(match.group(1) ?? "").split('/').last.replaceAll('&amp;', '&'); if (cleanName.isNotEmpty && !tempSongs.contains(cleanName)) tempSongs.add(cleanName); } setState(() { realNasSongs = tempSongs; isLoading = false; if (_loopMode == 2) _generateShuffledPlaylist(); }); _updateCachedFilesList(); } catch (e) { if (!silent) setState(() => isLoading = false); }
   }
 
   Future<void> playNasSong(String songName) async {
