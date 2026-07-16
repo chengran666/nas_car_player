@@ -29,14 +29,10 @@ Future<void> main() async {
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.nascarplayer.channel.audio',
         androidNotificationChannelName: 'NAS Car Player',
-        // 💡 改为 false：配合 androidStopForegroundOnPause=false，绕过 audio_service 编译断言
-        // 通知变为可滑动关闭，但前台服务永不停止，确保 BYD 等车机后台多媒体按键可达
-        androidNotificationOngoing: false,
+        androidNotificationOngoing: true,
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/ic_launcher',
-        // 💡 关键修复：暂停时也不停止前台服务，保持 MediaSession 始终活跃
-        // 这样方向盘多媒体按钮在后台任何时候都能被系统路由到本 app
-        androidStopForegroundOnPause: false,
+        androidStopForegroundOnPause: true,
         androidResumeOnClick: true,
       ),
     ) as MediaKitAudioHandler;
@@ -145,6 +141,26 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       _playPrevSong();
       _resetScreenSaverTimer();
     };
+
+    // 💡 兜底通道：接收原生 Android 层转发的方向盘多媒体按键原始键码
+    // BYD 等车机的多媒体按键可能不走 MediaSession，而是直接分发 KeyEvent
+    // MainActivity.kt 的 dispatchKeyEvent 会把键码通过 MethodChannel 发到这里
+    platform.setMethodCallHandler((call) async {
+      if (call.method == "onRawKeyDown") {
+        int rawKeyCode = call.arguments as int;
+        if (_checkDebounce()) return;
+        if (rawKeyCode == 87 || rawKeyCode == 273) {
+          _playNextSong(manual: true);
+          _resetScreenSaverTimer();
+        } else if (rawKeyCode == 88 || rawKeyCode == 272) {
+          _playPrevSong();
+          _resetScreenSaverTimer();
+        } else if (rawKeyCode == 85) {
+          globalPlayer.playOrPause();
+          _resetScreenSaverTimer();
+        }
+      }
+    });
 
     globalPlayer.stream.playing.listen((p) {
       if (mounted) {

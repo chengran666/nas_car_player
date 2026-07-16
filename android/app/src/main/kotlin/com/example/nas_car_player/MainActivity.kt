@@ -85,25 +85,22 @@ class MainActivity: AudioServiceActivity() {
         }
     }
 
-    // 💡 关键修复：BYD 等车机在后台可能直接分发 KeyEvent 而非走 MediaSession 框架
-    // 在 Activity 层拦截方向盘多媒体按键，通过 AudioManager 转发给当前活跃的 MediaSession
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_PLAY,
-            KeyEvent.KEYCODE_MEDIA_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_STOP -> {
-                if (event != null) {
-                    try {
-                        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                        audioManager.dispatchMediaKeyEvent(event)
-                    } catch (_: Exception) {}
+    // 💡 上帝通道兜底：BYD 等车机的方向盘多媒体按键可能不走 MediaSession 框架
+    // 直接在 Activity 层拦截所有 KeyEvent，把媒体键码通过 MethodChannel 转发给 Flutter
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_NEXT,
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_PLAY,
+                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_STOP -> {
+                    methodChannel?.invokeMethod("onRawKeyDown", event.keyCode)
+                    return true
                 }
-                return true
             }
         }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 }
