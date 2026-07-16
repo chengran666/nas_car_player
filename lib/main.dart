@@ -130,7 +130,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _spinController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _spinController.stop();
 
-    // 💡 修复4：废弃容易在后台被挂起的 Stream，直接挂载底层方法的真·回调
+    // 设置audioHandler的回调，用于处理MediaSession的切歌事件
     audioHandler.onNextCallback = () {
       if (_checkDebounce()) return;
       _playNextSong(manual: true);
@@ -141,26 +141,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       _playPrevSong();
       _resetScreenSaverTimer();
     };
-
-    // 💡 兜底通道：接收原生 Android 层转发的方向盘多媒体按键原始键码
-    // BYD 等车机的多媒体按键可能不走 MediaSession，而是直接分发 KeyEvent
-    // MainActivity.kt 的 dispatchKeyEvent 会把键码通过 MethodChannel 发到这里
-    platform.setMethodCallHandler((call) async {
-      if (call.method == "onRawKeyDown") {
-        int rawKeyCode = call.arguments as int;
-        if (_checkDebounce()) return;
-        if (rawKeyCode == 87 || rawKeyCode == 273) {
-          _playNextSong(manual: true);
-          _resetScreenSaverTimer();
-        } else if (rawKeyCode == 88 || rawKeyCode == 272) {
-          _playPrevSong();
-          _resetScreenSaverTimer();
-        } else if (rawKeyCode == 85) {
-          globalPlayer.playOrPause();
-          _resetScreenSaverTimer();
-        }
-      }
-    });
 
     globalPlayer.stream.playing.listen((p) {
       if (mounted) {
@@ -620,12 +600,12 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
   final Player player;
   MediaItem? _currentMediaItem;
 
-  // 💡 修复4：彻底抛弃 Stream，使用最原始可靠的函数回调
+  // 回调函数，用于通知UI层执行切歌操作
   void Function()? onNextCallback;
   void Function()? onPrevCallback;
 
   MediaKitAudioHandler(this.player) {
-    // 💡 修复2：启动时立刻塞入一个默认焦点，告诉 Android 系统这里有个活跃的媒体服务
+    // 启动时立刻塞入一个默认焦点，告诉 Android 系统这里有个活跃的媒体服务
     _currentMediaItem = const MediaItem(
       id: 'init',
       title: '等待播放',
@@ -668,7 +648,7 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
     ));
   }
 
-  // 💡 修复3：切歌加载期间强制保持缓冲状态，死死拉住媒体焦点
+  // 切歌加载期间强制保持缓冲状态，保持媒体焦点
   void forceBuffering() {
     playbackState.add(playbackState.value.copyWith(
       processingState: AudioProcessingState.buffering,
@@ -704,7 +684,7 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> onTaskRemoved() async {
-    // 💡 关键修复：不调用 stop() 和 exit(0)
+    // 不调用 stop() 和 exit(0)
     // BYD 等车机在切换应用时可能触发 onTaskRemoved，如果退出进程则 MediaSession 被销毁
     // 保持进程存活，让 MediaSession 持续响应后台方向盘多媒体按键
   }

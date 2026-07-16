@@ -84,23 +84,4 @@ class MainActivity: AudioServiceActivity() {
             }
         }
     }
-
-    // 💡 上帝通道兜底：BYD 等车机的方向盘多媒体按键可能不走 MediaSession 框架
-    // 直接在 Activity 层拦截所有 KeyEvent，把媒体键码通过 MethodChannel 转发给 Flutter
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_MEDIA_NEXT,
-                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-                KeyEvent.KEYCODE_MEDIA_PLAY,
-                KeyEvent.KEYCODE_MEDIA_PAUSE,
-                KeyEvent.KEYCODE_MEDIA_STOP -> {
-                    methodChannel?.invokeMethod("onRawKeyDown", event.keyCode)
-                    return true
-                }
-            }
-        }
-        return super.dispatchKeyEvent(event)
-    }
 }
