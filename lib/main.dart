@@ -309,6 +309,19 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     try { final dir = await getApplicationDocumentsDirectory(); final cacheDir = Directory('${dir.path}/nas_cache'); if (cacheDir.existsSync() && mounted) setState(() => _cachedFiles = cacheDir.listSync().whereType<File>().map((f) => f.path.split(Platform.pathSeparator).last).toSet()); } catch (_) {}
   }
 
+  Future<void> _deleteCacheFile(String fileName) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final cacheDir = Directory('${dir.path}/nas_cache');
+      final file = File('${cacheDir.path}/$fileName');
+      if (file.existsSync()) {
+        await file.delete();
+        _updateCachedFilesList();
+        if (mounted) setState(() {});
+      }
+    } catch (_) {}
+  }
+
   Future<String> _getPlayableUrl(String songName, String remoteUrl, String auth) async {
     try { final cacheDir = Directory('${(await getApplicationDocumentsDirectory()).path}/nas_cache'); if (!cacheDir.existsSync()) cacheDir.createSync(); final File localFile = File('${cacheDir.path}/$songName'); if (localFile.existsSync() && localFile.lengthSync() > 0) return localFile.path; _backgroundDownloadAndLimit(songName, remoteUrl, auth, cacheDir, localFile); return remoteUrl; } catch (e) { return remoteUrl; }
   }
@@ -542,6 +555,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("自动进入大屏: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _screenSaverTimeout.toDouble(), min: 0.0, max: 60.0, divisions: 60, activeColor: Colors.blueAccent, onChanged: (val) { setState(() { _screenSaverTimeout = val.toInt(); }); _prefs.setInt('screenSaverTimeout', val.toInt()); _resetScreenSaverTimer(); })), Text(_screenSaverTimeout == 0 ? "不自动切换" : "$_screenSaverTimeout s", style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("大屏歌词字号: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _lyricFontSize, min: 30.0, max: 100.0, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _lyricFontSize = val); _prefs.setDouble('lyricFontSize', val); })), Text(_lyricFontSize.toInt().toString(), style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("最大离线缓存 (GB): ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _maxCacheGB, min: 0.5, max: 20.0, divisions: 39, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _maxCacheGB = val); _prefs.setDouble('maxCacheGB', val); })), Text(_maxCacheGB.toStringAsFixed(1), style: TextStyle(fontSize: s(20)))])),
+
+          SizedBox(height: s(48)),
+          Text("缓存管理", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+          SizedBox(height: s(16)),
+          if (_cachedFiles.isEmpty)
+            Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Text("暂无缓存文件", style: TextStyle(fontSize: s(22), color: Colors.black54)))
+          else
+            ..._cachedFiles.map((fileName) => Card(color: Colors.white.withOpacity(0.6), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(12))), child: ListTile(contentPadding: EdgeInsets.all(s(12)), leading: Icon(Icons.music_note, color: Colors.blueAccent, size: s(36)), title: Text(fileName.replaceAll(RegExp(r'\.[^.]+$'), ''), style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), trailing: IconButton(icon: Icon(Icons.delete, color: Colors.redAccent, size: s(36)), onPressed: () => _deleteCacheFile(fileName))))),
 
           SizedBox(height: s(60)),
           Divider(color: Colors.black12, height: s(60)),
