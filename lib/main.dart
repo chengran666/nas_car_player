@@ -111,6 +111,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   double _uiScale = 1.3, _btnScale = 1.0, _lyricOffset = 0.0;
   static const platform = MethodChannel('com.nascarplayer/app_retain');
+  static const mediaChannel = MethodChannel('com.nascarplayer/media_control');
   double s(double value) => value * _uiScale;
 
   double _lyricFontSize = 50.0, _maxCacheGB = 2.0;
@@ -157,11 +158,57 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       audioHandler.updateDuration(dur);
     });
     globalPlayer.stream.completed.listen((c) { if (c) _playNextSong(manual: false); });
+
+    // 方案 A: 全局硬件键盘监听（拦截方向盘 KeyEvent）
+    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+
+    // 方案 C: 监听原生 Android MethodChannel 转发的媒体按键
+    mediaChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onMediaButton') {
+        String key = call.arguments;
+        if (key == 'NEXT' || key == 'PLAY_PAUSE' || key == 'PLAY') {
+          if (key == 'NEXT') {
+            if (_checkDebounce()) return;
+            _playNextSong(manual: true);
+            _resetScreenSaverTimer();
+          } else {
+            _togglePlayPause();
+          }
+        } else if (key == 'PREVIOUS') {
+          if (_checkDebounce()) return;
+          _playPrevSong();
+          _resetScreenSaverTimer();
+        } else if (key == 'PAUSE') {
+          if (isPlaying) globalPlayer.pause();
+        }
+      }
+    });
+  }
+
+  bool _handleKeyEvent(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      if (event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
+        if (_checkDebounce()) return true;
+        _playNextSong(manual: true);
+        _resetScreenSaverTimer();
+        return true;
+      } else if (event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
+        if (_checkDebounce()) return true;
+        _playPrevSong();
+        _resetScreenSaverTimer();
+        return true;
+      } else if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
+        _togglePlayPause();
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     _playbackSaveTimer?.cancel();
     _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
     _spinController.dispose(); super.dispose();
@@ -186,6 +233,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     if (now.difference(_lastEventTime).inMilliseconds < 400) return true;
     _lastEventTime = now;
     return false;
+  }
+
+  void _togglePlayPause() {
+    _resetScreenSaverTimer();
+    globalPlayer.playOrPause();
   }
 
   void _toggleLoopMode() {

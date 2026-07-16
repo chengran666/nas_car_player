@@ -13,12 +13,15 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity: AudioServiceActivity() {
     private val CHANNEL = "com.nascarplayer/app_retain"
+    private val MEDIA_CHANNEL = "com.nascarplayer/media_control"
     private var methodChannel: MethodChannel? = null
+    private var mediaMethodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        mediaMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MEDIA_CHANNEL)
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "sendToBackground" -> {
@@ -83,5 +86,32 @@ class MainActivity: AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    // 拦截方向盘多媒体按键，通过 MethodChannel 传递给 Flutter
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                mediaMethodChannel?.invokeMethod("onMediaButton", "NEXT")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                mediaMethodChannel?.invokeMethod("onMediaButton", "PREVIOUS")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                mediaMethodChannel?.invokeMethod("onMediaButton", "PLAY_PAUSE")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                mediaMethodChannel?.invokeMethod("onMediaButton", "PLAY")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                mediaMethodChannel?.invokeMethod("onMediaButton", "PAUSE")
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }
