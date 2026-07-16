@@ -555,14 +555,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("大屏歌词字号: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _lyricFontSize, min: 30.0, max: 100.0, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _lyricFontSize = val); _prefs.setDouble('lyricFontSize', val); })), Text(_lyricFontSize.toInt().toString(), style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("最大离线缓存 (GB): ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _maxCacheGB, min: 0.5, max: 20.0, divisions: 39, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _maxCacheGB = val); _prefs.setDouble('maxCacheGB', val); })), Text(_maxCacheGB.toStringAsFixed(1), style: TextStyle(fontSize: s(20)))])),
 
-          SizedBox(height: s(48)),
-          Text("缓存管理", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)),
-          SizedBox(height: s(16)),
-          if (_cachedFiles.isEmpty)
-            Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Text("暂无缓存文件", style: TextStyle(fontSize: s(22), color: Colors.black54)))
-          else
-            ..._cachedFiles.map((fileName) => Card(color: Colors.white.withOpacity(0.6), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(12))), child: ListTile(contentPadding: EdgeInsets.all(s(12)), leading: Icon(Icons.music_note, color: Colors.blueAccent, size: s(36)), title: Text(fileName.replaceAll(RegExp(r'\.[^.]+$'), ''), style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), trailing: IconButton(icon: Icon(Icons.delete, color: Colors.redAccent, size: s(36)), onPressed: () => _deleteCacheFile(fileName))))),
-
           SizedBox(height: s(60)),
           Divider(color: Colors.black12, height: s(60)),
           Center(
@@ -586,7 +578,85 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   }
 
   Widget _buildSongListView() {
-    return Scaffold(backgroundColor: Colors.transparent, appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, leading: IconButton(icon: Icon(Icons.arrow_back, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 0; }); }), title: Text(activeAccount != null ? activeAccount!['name'] : '群晖歌单', style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold))), body: isLoading ? const Center(child: CircularProgressIndicator()) : ListView.builder(controller: _playlistScrollController, itemCount: realNasSongs.length, itemExtent: s(114.0), itemBuilder: (context, index) { bool isCurrent = realNasSongs[index] == _currentFileName; bool isCached = _cachedFiles.contains(realNasSongs[index]); String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘'; return Container(color: isCurrent ? _lyricHighlightColor.withOpacity(0.12) : Colors.transparent, child: Center(child: ListTile(leading: SizedBox(width: s(48), child: isCurrent ? Icon(Icons.equalizer, color: _lyricHighlightColor, size: s(36)) : Text('${index + 1}', style: TextStyle(fontSize: s(24), color: Colors.black54), textAlign: TextAlign.center)), title: Text(realNasSongs[index].replaceAll(RegExp(r'\.[^.]+$'), ''), style: TextStyle(fontSize: s(26), fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500, color: isCurrent ? _lyricHighlightColor : Colors.black87)), subtitle: Text(isCached ? '来自 $nasName / 已缓存' : '来自 $nasName', style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)), trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline, color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)), onTap: () => playNasSong(realNasSongs[index])))); }));
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: Colors.black87, size: s(36)),
+          onPressed: () { setState(() { currentLeftScreen = 0; }); },
+        ),
+        title: Text(activeAccount != null ? activeAccount!['name'] : '群晖歌单',
+          style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold)),
+      ),
+      body: isLoading ? const Center(child: CircularProgressIndicator()) : ListView.builder(
+        controller: _playlistScrollController,
+        itemCount: realNasSongs.length,
+        itemBuilder: (context, index) {
+          String songName = realNasSongs[index];
+          bool isCurrent = songName == _currentFileName;
+          bool isCached = _cachedFiles.contains(songName);
+          String nasName = activeAccount != null ? activeAccount!['name'] : '未知云盘';
+
+          Widget songItem = Container(
+            height: s(114.0),
+            color: isCurrent ? _lyricHighlightColor.withOpacity(0.12) : Colors.transparent,
+            child: Center(
+              child: ListTile(
+                leading: SizedBox(
+                  width: s(48),
+                  child: isCurrent
+                    ? Icon(Icons.equalizer, color: _lyricHighlightColor, size: s(36))
+                    : Text('${index + 1}', style: TextStyle(fontSize: s(24), color: Colors.black54), textAlign: TextAlign.center),
+                ),
+                title: Text(songName.replaceAll(RegExp(r'\.[^.]+$'), ''),
+                  style: TextStyle(fontSize: s(26), fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+                    color: isCurrent ? _lyricHighlightColor : Colors.black87)),
+                subtitle: Text(isCached ? '来自 $nasName / 已缓存' : '来自 $nasName',
+                  style: TextStyle(fontSize: s(18), color: isCurrent ? _lyricHighlightColor.withOpacity(0.7) : Colors.black54)),
+                trailing: Icon(isCurrent ? Icons.pause_circle_outline : Icons.play_circle_outline,
+                  color: isCurrent ? _lyricHighlightColor : Colors.black87, size: s(36)),
+                onTap: () => playNasSong(songName),
+              ),
+            ),
+          );
+
+          if (isCached) {
+            return Dismissible(
+              key: Key(songName),
+              direction: DismissDirection.endToStart,
+              background: Container(
+                alignment: Alignment.centerRight,
+                padding: EdgeInsets.only(right: s(24)),
+                color: Colors.redAccent,
+                child: Icon(Icons.delete, color: Colors.white, size: s(36)),
+              ),
+              confirmDismiss: (direction) async {
+                return await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text('清除缓存', style: TextStyle(fontSize: s(24))),
+                    content: Text('确定要清除「${songName.replaceAll(RegExp(r'\.[^.]+$'), '')}」的缓存吗？',
+                      style: TextStyle(fontSize: s(22))),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: Text('取消', style: TextStyle(fontSize: s(20)))),
+                      TextButton(onPressed: () => Navigator.pop(context, true), child: Text('清除', style: TextStyle(fontSize: s(20), color: Colors.redAccent))),
+                    ],
+                  ),
+                );
+              },
+              onDismissed: (direction) {
+                _deleteCacheFile(songName);
+              },
+              child: songItem,
+            );
+          }
+
+          return songItem;
+        },
+      ),
+    );
   }
 
   Widget _buildQQMusicUnifiedStage() {
