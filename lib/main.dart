@@ -32,7 +32,6 @@ Future<void> main() async {
         androidNotificationOngoing: true,
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/ic_launcher',
-        androidStopForegroundOnPause: true,
         androidResumeOnClick: true,
       ),
     ) as MediaKitAudioHandler;
