@@ -120,6 +120,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   double _uiScale = 1.3, _btnScale = 1.0, _lyricOffset = 0.0;
   static const platform = MethodChannel('com.nascarplayer/app_retain');
+  static const mediaChannel = MethodChannel('com.nascarplayer/media_control');
   double s(double value) => value * _uiScale;
 
   double _lyricFontSize = 50.0, _maxCacheGB = 2.0;
@@ -181,7 +182,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       });
     });
     addLog("APP 启动，等待接收车机方向盘指令...");
-    addLog("监听通道: MediaSession + HardwareKey");
+    addLog("监听通道: MediaSession + HardwareKey + Native广播");
 
     // HardwareKey 监听（接收 adb keyevent 和部分车机方向盘按键）
     HardwareKeyboard.instance.addHandler((KeyEvent event) {
@@ -208,6 +209,27 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         }
       }
       return false;
+    });
+
+    // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）
+    mediaChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onMediaButton') {
+        String key = call.arguments;
+        addLog("✅ [Native广播] 捕获: $key");
+        if (key == 'NEXT') {
+          if (_checkDebounce()) return;
+          _playNextSong(manual: true);
+          _resetScreenSaverTimer();
+        } else if (key == 'PREVIOUS') {
+          if (_checkDebounce()) return;
+          _playPrevSong();
+          _resetScreenSaverTimer();
+        } else if (key == 'PLAY_PAUSE' || key == 'PLAY') {
+          _togglePlayPause();
+        } else if (key == 'PAUSE') {
+          if (isPlaying) globalPlayer.pause();
+        }
+      }
     });
   }
 
