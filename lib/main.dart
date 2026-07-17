@@ -181,7 +181,34 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       });
     });
     addLog("APP 启动，等待接收车机方向盘指令...");
-    addLog("监听通道: MediaSession (AudioService)");
+    addLog("监听通道: MediaSession + HardwareKey");
+
+    // HardwareKey 监听（接收 adb keyevent 和部分车机方向盘按键）
+    HardwareKeyboard.instance.addHandler((KeyEvent event) {
+      if (event is KeyDownEvent) {
+        String keyName = event.logicalKey.debugName ?? "未知";
+        if (event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
+          addLog("✅ [HardwareKey] 下一曲: $keyName");
+          if (_checkDebounce()) return true;
+          _playNextSong(manual: true);
+          _resetScreenSaverTimer();
+          return true;
+        } else if (event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
+          addLog("✅ [HardwareKey] 上一曲: $keyName");
+          if (_checkDebounce()) return true;
+          _playPrevSong();
+          _resetScreenSaverTimer();
+          return true;
+        } else if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
+          addLog("✅ [HardwareKey] 播放/暂停: $keyName");
+          _togglePlayPause();
+          return true;
+        } else {
+          addLog("🔵 [HardwareKey] 其他: $keyName");
+        }
+      }
+      return false;
+    });
   }
 
   @override
