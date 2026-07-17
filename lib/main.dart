@@ -111,6 +111,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   final List<String> _logs = [];
 
   late AnimationController _spinController;
+  late StreamSubscription _playingSub, _positionSub, _durationSub, _completedSub, _logSub;
   Color _lyricHighlightColor = const Color(0xFF1ED760), _bottomGlowColor = const Color(0xFFE2EFE9);
 
   late SharedPreferences _prefs;
@@ -156,22 +157,22 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       _resetScreenSaverTimer();
     };
 
-    globalPlayer.stream.playing.listen((p) {
+    _playingSub = globalPlayer.stream.playing.listen((p) {
       if (mounted) {
         setState(() => isPlaying = p);
         if (p) _spinController.repeat(); else _spinController.stop();
       }
     });
 
-    globalPlayer.stream.position.listen((pos) { if (mounted) { setState(() => _currentPosition = pos); _updateLyricScroll(pos); } });
-    globalPlayer.stream.duration.listen((dur) {
+    _positionSub = globalPlayer.stream.position.listen((pos) { if (mounted) { setState(() => _currentPosition = pos); _updateLyricScroll(pos); } });
+    _durationSub = globalPlayer.stream.duration.listen((dur) {
       if (mounted) setState(() => _totalDuration = dur);
       audioHandler.updateDuration(dur);
     });
-    globalPlayer.stream.completed.listen((c) { if (c) _playNextSong(manual: false); });
+    _completedSub = globalPlayer.stream.completed.listen((c) { if (c && mounted) _playNextSong(manual: false); });
 
     // 日志流订阅
-    _logStream.stream.listen((log) {
+    _logSub = _logStream.stream.listen((log) {
       if (!mounted) return;
       setState(() => _logs.add(log));
       Future.delayed(const Duration(milliseconds: 100), () {
@@ -224,7 +225,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _clockTimer?.cancel();
+    _screenSaverTimer?.cancel();
     _playbackSaveTimer?.cancel();
+    _playingSub.cancel();
+    _positionSub.cancel();
+    _durationSub.cancel();
+    _completedSub.cancel();
+    _logSub.cancel();
     _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
     _logScrollController.dispose();
     _spinController.dispose(); super.dispose();
@@ -532,7 +540,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     return ShaderMask(
       shaderCallback: (Rect bounds) => const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black, Colors.black, Colors.transparent], stops: [0.0, 0.05, 0.95, 1.0]).createShader(bounds), blendMode: BlendMode.dstIn,
       child: ListView.builder(
-        cacheExtent: 99999, controller: isMini ? _miniLyricScrollController : _lyricScrollController, padding: EdgeInsets.symmetric(vertical: isMini ? s(90.0) : MediaQuery.of(context).size.height / 3.5), physics: const BouncingScrollPhysics(), itemCount: parsedLyrics.length,
+        cacheExtent: 500, controller: isMini ? _miniLyricScrollController : _lyricScrollController, padding: EdgeInsets.symmetric(vertical: isMini ? s(90.0) : MediaQuery.of(context).size.height / 3.5), physics: const BouncingScrollPhysics(), itemCount: parsedLyrics.length,
         itemBuilder: (context, index) {
           bool isCurrent = index == _currentLyricIndex;
           return AnimatedDefaultTextStyle(duration: const Duration(milliseconds: 300), style: TextStyle(fontSize: isCurrent ? (isMini ? s(24) : (_isLargeMode ? _lyricFontSize + s(6) : _lyricFontSize)) : (isMini ? s(20) : (_isLargeMode ? _lyricFontSize - s(8) : _lyricFontSize - s(10))), fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal, color: isCurrent ? _lyricHighlightColor : (isMini ? Colors.black45 : Colors.black87), height: 1.5), child: Container(key: isMini ? _miniLyricKeys[index] : _lyricKeys[index], padding: EdgeInsets.symmetric(vertical: isMini ? s(9.0) : s(18.0)), alignment: isMini ? Alignment.center : Alignment.centerLeft, child: Text(parsedLyrics[index]['text'])));
@@ -545,7 +553,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   Widget build(BuildContext context) {
     double sidebarWidth = (currentLeftScreen == 2 && _isLargeMode) ? 0 : s(390);
     return PopScope(
-        canPop: false, onPopInvokedWithResult: (bool didPop, dynamic result) { if (didPop) return; platform.invokeMethod('sendToBackground'); },
+        canPop: false, onPopInvokedWithResult: (bool didPop, dynamic result) { if (didPop) return; try { platform.invokeMethod('sendToBackground'); } catch (_) {} },
         child: Scaffold(
             body: Stack(
               children: [
@@ -978,12 +986,14 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> skipToNext() async {
     addLog("[MediaSession] skipToNext()");
     if (onNextCallback != null) onNextCallback!();
+    return super.skipToNext();
   }
 
   @override
   Future<void> skipToPrevious() async {
     addLog("[MediaSession] skipToPrevious()");
     if (onPrevCallback != null) onPrevCallback!();
+    return super.skipToPrevious();
   }
 
   @override

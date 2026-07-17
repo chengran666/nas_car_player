@@ -25,7 +25,11 @@ class MainActivity: AudioServiceActivity() {
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "sendToBackground" -> {
-                    moveTaskToBack(true)
+                    try {
+                        moveTaskToBack(true)
+                    } catch (e: Exception) {
+                        // 部分车机ROM可能抛异常
+                    }
                     result.success(null)
                 }
                 "checkOverlayPermission" -> {
