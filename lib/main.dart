@@ -212,11 +212,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       return false;
     });
 
-    // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）- 兜底方案
+    // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）- 仅切歌兜底
+    // PLAY_PAUSE 由 MediaSession 处理，避免双重触发
     mediaChannel.setMethodCallHandler((call) async {
       if (call.method == 'onMediaButton') {
         String key = call.arguments;
-        addLog("✅ [Native广播] 捕获: $key");
+        addLog("🔵 [Native广播] 捕获: $key");
         if (key == 'NEXT') {
           if (_checkDebounce()) return;
           _playNextSong(manual: true);
@@ -225,11 +226,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           if (_checkDebounce()) return;
           _playPrevSong();
           _resetScreenSaverTimer();
-        } else if (key == 'PLAY_PAUSE' || key == 'PLAY') {
-          _togglePlayPause();
-        } else if (key == 'PAUSE') {
-          if (isPlaying) globalPlayer.pause();
         }
+        // PLAY_PAUSE/PLAY/PAUSE 不处理，交给 MediaSession
       }
     });
   }
