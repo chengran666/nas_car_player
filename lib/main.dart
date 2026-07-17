@@ -212,23 +212,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     });
 
     // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）
+    // 仅记录日志，不执行操作，避免与 MediaSession 重复处理
     mediaChannel.setMethodCallHandler((call) async {
       if (call.method == 'onMediaButton') {
         String key = call.arguments;
-        addLog("✅ [Native广播] 捕获: $key");
-        if (key == 'NEXT') {
-          if (_checkDebounce()) return;
-          _playNextSong(manual: true);
-          _resetScreenSaverTimer();
-        } else if (key == 'PREVIOUS') {
-          if (_checkDebounce()) return;
-          _playPrevSong();
-          _resetScreenSaverTimer();
-        } else if (key == 'PLAY_PAUSE' || key == 'PLAY') {
-          _togglePlayPause();
-        } else if (key == 'PAUSE') {
-          if (isPlaying) globalPlayer.pause();
-        }
+        addLog("🔵 [Native广播] 捕获(仅记录): $key");
       }
     });
   }
