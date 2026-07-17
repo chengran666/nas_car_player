@@ -89,27 +89,28 @@ class MainActivity: AudioServiceActivity() {
     }
 
     // 拦截方向盘多媒体按键，通过 MethodChannel 传递给 Flutter
+    // 设为 return false 让按键继续传递到 MediaSession 测试
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_NEXT -> {
                 mediaMethodChannel?.invokeMethod("onMediaButton", "NEXT")
-                return true
+                return false  // 不拦截，传递到 MediaSession
             }
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                 mediaMethodChannel?.invokeMethod("onMediaButton", "PREVIOUS")
-                return true
+                return false  // 不拦截，传递到 MediaSession
             }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                 mediaMethodChannel?.invokeMethod("onMediaButton", "PLAY_PAUSE")
-                return true
+                return false  // 不拦截，传递到 MediaSession
             }
             KeyEvent.KEYCODE_MEDIA_PLAY -> {
                 mediaMethodChannel?.invokeMethod("onMediaButton", "PLAY")
-                return true
+                return false
             }
             KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 mediaMethodChannel?.invokeMethod("onMediaButton", "PAUSE")
-                return true
+                return false
             }
         }
         return super.onKeyDown(keyCode, event)
