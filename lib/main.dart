@@ -902,6 +902,7 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
       artist: 'NAS Car Player',
     );
     mediaItem.add(_currentMediaItem!);
+    addLog("🔵 [MediaSession] 初始化完成，注册焦点");
     _broadcastState(false);
 
     player.stream.playing.listen((playing) {
@@ -915,6 +916,8 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void _broadcastState(bool playing) {
+    String state = playing ? "播放中" : "已暂停";
+    addLog("🔵 [MediaSession] 状态更新: $state | 焦点: 活跃");
     playbackState.add(playbackState.value.copyWith(
       playing: playing,
       controls: [
@@ -940,6 +943,7 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
 
   // 切歌加载期间强制保持缓冲状态，保持媒体焦点
   void forceBuffering() {
+    addLog("🔵 [MediaSession] 切歌加载中，强制保持焦点");
     playbackState.add(playbackState.value.copyWith(
       processingState: AudioProcessingState.buffering,
     ));
