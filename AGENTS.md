@@ -6,9 +6,9 @@ Flutter app for **Android car head units**. Streams music from NAS servers via W
 
 ## Architecture
 
-- **Single-file app**: all logic is in `lib/main.dart` (~733 lines). No `lib/` subdirectories, no routing, no state management library.
+- **Single-file app**: all logic is in `lib/main.dart` (~1050 lines). No `lib/` subdirectories, no routing, no state management library.
 - `MainHomeScreen` (StatefulWidget) holds everything: UI, WebDAV, audio, lyrics, caching, settings.
-- `MediaKitAudioHandler` (extends `BaseAudioHandler`) wraps `media_kit` Player for Android notification/media-session integration.
+- `CarAudioHandler` (extends `BaseAudioHandler`) wraps `just_audio` AudioPlayer for Android notification/media-session integration.
 - UI scaling: every pixel value goes through `s(double value) => value * _uiScale`. Don't hardcode pixel sizes.
 
 ## Key commands
@@ -28,7 +28,7 @@ The `call` keyword in .bat is critical — without it the script exits after the
 
 | Package | Purpose |
 |---|---|
-| `media_kit` / `media_kit_video` / `media_kit_libs_audio` | Audio playback engine |
+| `just_audio` | Audio playback engine (supports background MediaSession control) |
 | `audio_service` | Android foreground service + notification controls |
 | `dio` | HTTP client (WebDAV PROPFIND, downloads, API calls) |
 | `shared_preferences` | Persistent settings (WebDAV accounts, UI prefs, playback state) |
@@ -37,8 +37,8 @@ The `call` keyword in .bat is critical — without it the script exits after the
 ## Platform integration
 
 - **MethodChannel** `com.nascarplayer/app_retain`: native Android methods — `checkOverlayPermission`, `requestOverlayPermission`, `sendToBackground`, `listInstalledApps`, `launchAppByPackage`.
-- Android manifest has `audio_service` notification channel config; `androidStopForegroundOnPause: true` and `androidNotificationOngoing: true` are deliberate for car head-unit keep-alive.
-- `onTaskRemoved` calls `exit(0)` — intentional, not a bug.
+- Android manifest has `audio_service` notification channel config; `androidNotificationOngoing: true` is deliberate for car head-unit keep-alive.
+- `onTaskRemoved` does NOT call `stop()` or `exit(0)` — intentional, keeps MediaSession active for background steering wheel controls.
 
 ## Data flow
 
@@ -53,4 +53,4 @@ The `call` keyword in .bat is critical — without it the script exits after the
 - External API Dio clients use `badCertificateCallback = (_, __, ___) => true` to bypass TLS cert validation — this is intentional for self-hosted NAS certs.
 - `audioHandler` uses **function callbacks** (`onNextCallback`/`onPrevCallback`) instead of Streams for next/prev — Streams get suspended when app is backgrounded on Android car units.
 - Song name parsing: `Artist - Title` format expected for metadata extraction. If no `-` is found, artist defaults to "私人乐库".
-- The `_checkDebounce()` method (400ms threshold) guards next/prev actions — respect it to avoid double-triggers from hardware buttons on car head units.
+- The `_checkDebounce()` method (250ms threshold) guards next/prev actions — respect it to avoid double-triggers from hardware buttons on car head units.

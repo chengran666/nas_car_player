@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
-import 'package:media_kit/media_kit.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
@@ -10,13 +10,11 @@ import 'package:audio_service/audio_service.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 const String appBuildTime = String.fromEnvironment('BUILD_TIME', defaultValue: '终极后台保活版');
 const String appAuthor = "NAS Car Player";
 
-late Player globalPlayer;
-late MediaKitAudioHandler audioHandler;
+late CarAudioHandler audioHandler;
 
 final StreamController<String> _logStream = StreamController<String>.broadcast();
 void addLog(String message) {
@@ -27,36 +25,23 @@ void addLog(String message) {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    MediaKit.ensureInitialized();
-    globalPlayer = Player();
+  runApp(const NasCarPlayerApp());
 
+  try {
     audioHandler = await AudioService.init(
-      builder: () => MediaKitAudioHandler(globalPlayer),
+      builder: () => CarAudioHandler(),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.nascarplayer.channel.audio',
         androidNotificationChannelName: 'NAS Car Player',
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/ic_launcher',
         androidResumeOnClick: true,
-        androidStopForegroundOnPause: false,  // 关键：暂停不停止前台服务，保持MediaSession活跃
+        androidNotificationOngoing: true,
       ),
-    ) as MediaKitAudioHandler;
-
-    runApp(const NasCarPlayerApp());
-  } catch (e, stackTrace) {
-    runApp(MaterialApp(
-      home: Scaffold(
-        backgroundColor: Colors.black87,
-        body: SingleChildScrollView(
-          padding: const EdgeInsets.all(40),
-          child: Text(
-              "引擎启动崩溃了，请拍照报错信息:\n\n$e\n\n$stackTrace",
-              style: const TextStyle(color: Colors.redAccent, fontSize: 20, height: 1.5)
-          ),
-        ),
-      ),
-    ));
+    );
+    addLog("音频服务初始化成功");
+  } catch (e) {
+    addLog("音频服务初始化失败: $e");
   }
 }
 
@@ -143,33 +128,35 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _spinController = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _spinController.stop();
 
-    // 设置audioHandler的回调，用于处理MediaSession的切歌事件
+    // 设置 MediaSession 切歌回调
     audioHandler.onNextCallback = () {
-      addLog("✅ [MediaSession] 触发: 下一曲 (方向盘 Next)");
+      addLog("\u2705 [MediaSession] \u89e6\u53d1: \u4e0b\u4e00\u66f2 (\u65b9\u5411\u76d8 Next)");
       if (_checkDebounce()) return;
       _playNextSong(manual: true);
       _resetScreenSaverTimer();
     };
     audioHandler.onPrevCallback = () {
-      addLog("✅ [MediaSession] 触发: 上一曲 (方向盘 Prev)");
+      addLog("\u2705 [MediaSession] \u89e6\u53d1: \u4e0a\u4e00\u66f2 (\u65b9\u5411\u76d8 Prev)");
       if (_checkDebounce()) return;
       _playPrevSong();
       _resetScreenSaverTimer();
     };
 
-    _playingSub = globalPlayer.stream.playing.listen((p) {
+    // 监听 just_audio 的播放状态
+    _playingSub = audioHandler.player.playingStream.listen((p) {
       if (mounted) {
         setState(() => isPlaying = p);
         if (p) _spinController.repeat(); else _spinController.stop();
       }
     });
 
-    _positionSub = globalPlayer.stream.position.listen((pos) { if (mounted) { setState(() => _currentPosition = pos); _updateLyricScroll(pos); } });
-    _durationSub = globalPlayer.stream.duration.listen((dur) {
-      if (mounted) setState(() => _totalDuration = dur);
-      audioHandler.updateDuration(dur);
+    _positionSub = audioHandler.player.positionStream.listen((pos) { if (mounted) { setState(() => _currentPosition = pos); _updateLyricScroll(pos); } });
+    _durationSub = audioHandler.player.durationStream.listen((dur) {
+      if (mounted && dur != null) setState(() => _totalDuration = dur);
     });
-    _completedSub = globalPlayer.stream.completed.listen((c) { if (c && mounted) _playNextSong(manual: false); });
+    _completedSub = audioHandler.player.processingStateStream.listen((state) {
+      if (state == ProcessingState.completed && mounted) _playNextSong(manual: false);
+    });
 
     // 日志流订阅
     _logSub = _logStream.stream.listen((log) {
@@ -213,7 +200,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     });
 
     // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）- 仅切歌兜底
-    // PLAY_PAUSE 由 MediaSession 处理，避免双重触发
     mediaChannel.setMethodCallHandler((call) async {
       if (call.method == 'onMediaButton') {
         String key = call.arguments;
@@ -227,7 +213,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           _playPrevSong();
           _resetScreenSaverTimer();
         }
-        // PLAY_PAUSE/PLAY/PAUSE 不处理，交给 MediaSession
       }
     });
   }
@@ -245,15 +230,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     _logSub.cancel();
     _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
     _logScrollController.dispose();
-    _spinController.dispose(); super.dispose();
+    _spinController.dispose();
+    super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkOverlayPermission();
-      // 从后台恢复时刷新MediaSession状态
-      audioHandler._broadcastState(isPlaying);
     }
   }
 
@@ -273,7 +257,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   void _togglePlayPause() {
     _resetScreenSaverTimer();
-    globalPlayer.playOrPause();
+    if (audioHandler.player.playing) {
+      audioHandler.player.pause();
+    } else {
+      audioHandler.player.play();
+    }
   }
 
   void _toggleLoopMode() {
@@ -323,7 +311,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       int lpos = _prefs.getInt('lastPosition') ?? 0;
       if (lfn != null && lacc != null) {
         activeAccount = jsonDecode(lacc); await fetchSongsFromWebDav(silent: true);
-        if (realNasSongs.contains(lfn)) { await playNasSong(lfn); globalPlayer.seek(Duration(milliseconds: lpos)); }
+        if (realNasSongs.contains(lfn)) { await playNasSong(lfn); audioHandler.player.seek(Duration(milliseconds: lpos)); }
       }
     }
 
@@ -525,25 +513,25 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     if (activeAccount == null) return; playingAccount = activeAccount; String rawAuth = "Basic ${base64Encode(utf8.encode("${activeAccount!['user']}:${activeAccount!['pwd']}"))}"; String remoteUrl = "${activeAccount!['url']}${Uri.encodeFull(songName)}";
     setState(() { currentCoverUrl = defaultCoverUrl; _currentFileName = songName; }); _lyricOffset = _prefs.getDouble('lyricOffset_$songName') ?? 0.0; _parseRawLrcText("[00:00.00]正在检索本地缓存与网络词库...");
 
-    // 💡 修复3：前置占位。在开始缓慢的网络请求前，立刻告诉系统我们正在切歌，并保持缓冲状态，防止系统认为焦点死亡
     String pure = songName.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll(RegExp(r'\[.*?\]|\(.*?\)|【.*?】|（.*?）'), '');
     if (pure.contains('-')) { var p = pure.split('-'); currentArtist = p[0].trim(); currentPlayingSong = p[1].trim(); }
     else { currentPlayingSong = pure.trim(); currentArtist = "私人乐库"; }
 
     audioHandler.updateCurrentSong(currentPlayingSong, currentArtist, currentCoverUrl);
-    audioHandler.forceBuffering(); // 关键！强制告诉系统“我在加载”，锁死焦点
 
     fetchLyricAndCover(songName);
 
     try {
       String playPath = await _getPlayableUrl(songName, remoteUrl, rawAuth);
-      await globalPlayer.open(Media(playPath, httpHeaders: playPath.startsWith('http') ? {'Authorization': rawAuth} : {}));
+      await audioHandler.playSong(playPath, rawAuth);
       setState(() {
         currentLeftScreen = 2; _isLargeMode = false;
       });
 
       _resetScreenSaverTimer();
-    } catch (_) {}
+    } catch (e) {
+      addLog("播放失败: $e");
+    }
   }
 
   String _printDuration(Duration d) => "${d.inMinutes.remainder(60).toString().padLeft(2, "0")}:${d.inSeconds.remainder(60).toString().padLeft(2, "0")}";
@@ -583,7 +571,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
                             children: [
                               GestureDetector(onTap: () { setState(() { currentLeftScreen = 0; _isLargeMode = false; }); _screenSaverTimer?.cancel(); }, child: Row(children: [Icon(Icons.music_note, color: Colors.blueAccent, size: s(54)), SizedBox(width: s(12)), Text('NAS 乐库', style: TextStyle(color: Colors.black87, fontSize: s(30), fontWeight: FontWeight.bold))])),
                               Expanded(child: AnimatedAlign(duration: const Duration(milliseconds: 600), curve: Curves.easeInOut, alignment: (currentPlayingSong == "等待播放" && !isPlaying) ? Alignment.center : Alignment.topCenter, child: Column(mainAxisSize: MainAxisSize.min, children: [SizedBox(height: s(15)), RotationTransition(turns: _spinController, child: Container(width: s(160), height: s(160), decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: s(20), offset: Offset(0, s(8)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(40), height: s(40), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))), SizedBox(height: s(15)), Text(currentPlayingSong, style: TextStyle(fontSize: s(30), fontWeight: FontWeight.bold, color: Colors.black87), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center), Text(currentArtist, style: TextStyle(fontSize: s(20), color: Colors.black54)), if (currentPlayingSong != "等待播放") Expanded(child: GestureDetector(onTap: () { setState(() { currentLeftScreen = 2; _isLargeMode = false; _resetScreenSaverTimer(); }); }, child: Container(margin: EdgeInsets.symmetric(vertical: s(12)), child: _buildScrollingLyrics(context, isMini: true))))]))),
-                              Container(padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))), child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: _toggleLoopMode), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); globalPlayer.playOrPause(); }), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); })])),
+                              Container(padding: EdgeInsets.symmetric(horizontal: s(6), vertical: s(12)), decoration: BoxDecoration(color: Colors.white.withOpacity(0.5), borderRadius: BorderRadius.circular(s(45))), child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(33) * _btnScale, color: Colors.black87, onPressed: _toggleLoopMode), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(64) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _togglePlayPause(); }), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(45) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); })])),
                             ],
                           ),
                         ),
@@ -877,7 +865,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
             Positioned(left: s(30), top: s(30), child: IconButton(icon: Icon(Icons.arrow_back_ios, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 1; _screenSaverTimer?.cancel(); _scrollToCurrentSong(); }); })),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, right: s(75), bottom: _isLargeMode ? s(75) : s(225), width: _isLargeMode ? s(240) : s(220), height: _isLargeMode ? s(240) : s(220), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 1.0 : 0.0, child: RotationTransition(turns: _isLargeMode ? _spinController : const AlwaysStoppedAnimation(0), child: AnimatedContainer(duration: const Duration(milliseconds: 450), decoration: BoxDecoration(borderRadius: BorderRadius.circular(s(300)), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: s(25), offset: Offset(0, s(10)))], image: DecorationImage(image: NetworkImage(currentCoverUrl), fit: BoxFit.cover)), child: Center(child: Container(width: s(45), height: s(45), decoration: BoxDecoration(color: Colors.white.withOpacity(0.8), shape: BoxShape.circle))))))),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, left: s(75), top: _isLargeMode ? s(85) : s(90), bottom: _isLargeMode ? s(60) : s(240), width: s(750), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(currentPlayingSong, style: TextStyle(fontSize: _isLargeMode ? s(40) : s(34), fontWeight: FontWeight.bold, color: Colors.black87)), Text(currentArtist, style: TextStyle(fontSize: s(18), color: Colors.black54)), SizedBox(height: s(15)), Expanded(child: _buildScrollingLyrics(context, isMini: false))])),
-            AnimatedPositioned(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut, left: s(75), right: s(75), bottom: _isLargeMode ? s(-180) : s(30), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 0.0 : 1.0, child: Column(children: [Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); globalPlayer.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]), FittedBox(fit: BoxFit.scaleDown, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: _toggleLoopMode), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), SizedBox(width: s(24)), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(100) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); globalPlayer.playOrPause(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.timer), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _showLyricOffsetDialog(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.queue_music), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () async { if (playingAccount != null && activeAccount != playingAccount) { setState(() { activeAccount = playingAccount; }); await fetchSongsFromWebDav(silent: true); } setState(() { currentLeftScreen = 1; _isLargeMode = false; }); _screenSaverTimer?.cancel(); Future.delayed(const Duration(milliseconds: 300), () => _scrollToCurrentSong()); })]))]))),
+            AnimatedPositioned(duration: const Duration(milliseconds: 400), curve: Curves.easeInOut, left: s(75), right: s(75), bottom: _isLargeMode ? s(-180) : s(30), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 0.0 : 1.0, child: Column(children: [Row(children: [Text(_printDuration(_currentPosition), style: TextStyle(color: Colors.black54, fontSize: s(18))), Expanded(child: Slider(value: _totalDuration.inMilliseconds > 0 ? _currentPosition.inMilliseconds.toDouble() : 0.0, min: 0.0, max: _totalDuration.inMilliseconds > 0 ? _totalDuration.inMilliseconds.toDouble() : 1.0, activeColor: Colors.black87, inactiveColor: Colors.black12, onChanged: (value) { _resetScreenSaverTimer(); audioHandler.player.seek(Duration(milliseconds: value.toInt())); })), Text(_printDuration(_totalDuration), style: TextStyle(color: Colors.black54, fontSize: s(18)))]), FittedBox(fit: BoxFit.scaleDown, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [IconButton(icon: Icon(_loopMode == 0 ? Icons.repeat : (_loopMode == 1 ? Icons.repeat_one : Icons.shuffle)), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: _toggleLoopMode), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.skip_previous), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playPrevSong(); }), SizedBox(width: s(24)), IconButton(icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled), iconSize: s(100) * _btnScale, color: _lyricHighlightColor, onPressed: () { _resetScreenSaverTimer(); _togglePlayPause(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.skip_next), iconSize: s(64) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _playNextSong(manual: true); }), SizedBox(width: s(36)), IconButton(icon: const Icon(Icons.timer), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () { _resetScreenSaverTimer(); _showLyricOffsetDialog(); }), SizedBox(width: s(24)), IconButton(icon: const Icon(Icons.queue_music), iconSize: s(42) * _btnScale, color: Colors.black87, onPressed: () async { if (playingAccount != null && activeAccount != playingAccount) { setState(() { activeAccount = playingAccount; }); await fetchSongsFromWebDav(silent: true); } setState(() { currentLeftScreen = 1; _isLargeMode = false; }); _screenSaverTimer?.cancel(); Future.delayed(const Duration(milliseconds: 300), () => _scrollToCurrentSong()); })]))]))),
             AnimatedPositioned(duration: const Duration(milliseconds: 450), curve: Curves.easeInOut, right: s(75), top: _isLargeMode ? s(35) : s(-240), child: AnimatedOpacity(duration: const Duration(milliseconds: 300), opacity: _isLargeMode ? 1.0 : 0.0, child: Text(_currentTimeString, style: TextStyle(fontSize: s(160), fontWeight: FontWeight.w200, color: Colors.black87, fontFamily: 'monospace')))),
           ],
         ),
@@ -894,38 +882,41 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   }
 }
 
-class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
-  final Player player;
+class CarAudioHandler extends BaseAudioHandler with SeekHandler {
+  final AudioPlayer player = AudioPlayer();
   MediaItem? _currentMediaItem;
 
-  // 回调函数，用于通知UI层执行切歌操作
+  // 切歌回调，UI层设置
   void Function()? onNextCallback;
   void Function()? onPrevCallback;
 
-  MediaKitAudioHandler(this.player) {
-    // 启动时立刻塞入一个默认焦点，告诉 Android 系统这里有个活跃的媒体服务
+  CarAudioHandler() {
     _currentMediaItem = const MediaItem(
       id: 'init',
-      title: '等待播放',
+      title: '\u7b49\u5f85\u64ad\u653e',
       artist: 'NAS Car Player',
     );
     mediaItem.add(_currentMediaItem!);
-    addLog("🔵 [MediaSession] 初始化完成，注册焦点");
-    _broadcastState(false);
+    addLog("\ud83d\udd35 [MediaSession] \u521d\u59cb\u5316\u5b8c\u6210");
 
-    player.stream.playing.listen((playing) {
+    // 监听播放状态变化，广播给 MediaSession
+    player.playingStream.listen((playing) {
       _broadcastState(playing);
     });
-    player.stream.position.listen((position) {
+    player.positionStream.listen((position) {
       playbackState.add(playbackState.value.copyWith(
         updatePosition: position,
       ));
     });
+    player.durationStream.listen((duration) {
+      if (duration != null && _currentMediaItem != null) {
+        _currentMediaItem = _currentMediaItem!.copyWith(duration: duration);
+        mediaItem.add(_currentMediaItem!);
+      }
+    });
   }
 
   void _broadcastState(bool playing) {
-    String state = playing ? "播放中" : "已暂停";
-    addLog("🔵 [MediaSession] 状态更新: $state | 焦点: 活跃");
     playbackState.add(playbackState.value.copyWith(
       playing: playing,
       controls: [
@@ -942,40 +933,61 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
         MediaAction.skipToNext,
         MediaAction.skipToPrevious,
       },
-      processingState: AudioProcessingState.ready,
-      updatePosition: player.state.position,
-      bufferedPosition: player.state.position,
+      processingState: _mapProcessingState(player.processingState),
+      updatePosition: player.position,
+      bufferedPosition: player.bufferedPosition,
       speed: 1.0,
     ));
   }
 
-  // 切歌加载期间强制保持缓冲状态，保持媒体焦点
-  void forceBuffering() {
-    addLog("🔵 [MediaSession] 切歌加载中，强制保持焦点");
-    playbackState.add(playbackState.value.copyWith(
-      processingState: AudioProcessingState.buffering,
-    ));
+  AudioProcessingState _mapProcessingState(ProcessingState state) {
+    switch (state) {
+      case ProcessingState.idle:
+        return AudioProcessingState.idle;
+      case ProcessingState.loading:
+        return AudioProcessingState.loading;
+      case ProcessingState.buffering:
+        return AudioProcessingState.buffering;
+      case ProcessingState.ready:
+        return AudioProcessingState.ready;
+      case ProcessingState.completed:
+        return AudioProcessingState.completed;
+    }
+  }
+
+  Future<void> playSong(String url, String auth) async {
+    addLog("\ud83c\udfb5 \u64ad\u653e: ${url.split('/').last}");
+    try {
+      if (url.startsWith('http')) {
+        await player.setUrl(url, headers: {'Authorization': auth});
+      } else {
+        await player.setFilePath(url);
+      }
+      await player.play();
+    } catch (e) {
+      addLog("\u274c \u64ad\u653e\u5931\u8d25: $e");
+    }
   }
 
   @override
   Future<void> play() async {
     addLog("[MediaSession] play()");
     await player.play();
-    _broadcastState(true);
   }
 
   @override
   Future<void> pause() async {
     addLog("[MediaSession] pause()");
     await player.pause();
-    _broadcastState(false);
   }
 
-  @override
   Future<void> playPause() async {
     addLog("[MediaSession] playPause()");
-    await player.playOrPause();
-    _broadcastState(player.state.playing);
+    if (player.playing) {
+      await player.pause();
+    } else {
+      await player.play();
+    }
   }
 
   @override
@@ -989,23 +1001,19 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> onTaskRemoved() async {
-    // 不调用 stop() 和 exit(0)
-    // BYD 等车机在切换应用时可能触发 onTaskRemoved，如果退出进程则 MediaSession 被销毁
-    // 保持进程存活，让 MediaSession 持续响应后台方向盘多媒体按键
+    // 不调用 stop()，保持 MediaSession 活跃
   }
 
   @override
   Future<void> skipToNext() async {
-    addLog("[MediaSession] skipToNext()");
+    addLog("\u2705 [MediaSession] skipToNext() - \u65b9\u5411\u76d8 Next");
     if (onNextCallback != null) onNextCallback!();
-    return super.skipToNext();
   }
 
   @override
   Future<void> skipToPrevious() async {
-    addLog("[MediaSession] skipToPrevious()");
+    addLog("\u2705 [MediaSession] skipToPrevious() - \u65b9\u5411\u76d8 Prev");
     if (onPrevCallback != null) onPrevCallback!();
-    return super.skipToPrevious();
   }
 
   @override
@@ -1013,7 +1021,11 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
     addLog("[MediaSession] click($button)");
     switch (button) {
       case MediaButton.media:
-        await player.playOrPause();
+        if (player.playing) {
+          await player.pause();
+        } else {
+          await player.play();
+        }
         break;
       case MediaButton.next:
         await skipToNext();
@@ -1024,7 +1036,7 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  Future<void> updateCurrentSong(String title, String artist, String coverUrl) async {
+  void updateCurrentSong(String title, String artist, String coverUrl) {
     _currentMediaItem = MediaItem(
       id: title,
       title: title,
@@ -1032,12 +1044,5 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
       artUri: Uri.parse(coverUrl),
     );
     mediaItem.add(_currentMediaItem!);
-  }
-
-  Future<void> updateDuration(Duration duration) async {
-    if (_currentMediaItem != null) {
-      _currentMediaItem = _currentMediaItem!.copyWith(duration: duration);
-      mediaItem.add(_currentMediaItem!);
-    }
   }
 }
