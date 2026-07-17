@@ -18,6 +18,13 @@ const String appAuthor = "NAS Car Player";
 late Player globalPlayer;
 late MediaKitAudioHandler audioHandler;
 
+final StreamController<String> _logStream = StreamController<String>.broadcast();
+void addLog(String message) {
+  final time = DateTime.now().toString().substring(11, 19);
+  _logStream.add('[$time] $message');
+  debugPrint('[$time] $message');
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
@@ -100,6 +107,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   final ScrollController _lyricScrollController = ScrollController();
   final ScrollController _miniLyricScrollController = ScrollController();
   final ScrollController _playlistScrollController = ScrollController();
+  final ScrollController _logScrollController = ScrollController();
+  final List<String> _logs = [];
 
   late AnimationController _spinController;
   Color _lyricHighlightColor = const Color(0xFF1ED760), _bottomGlowColor = const Color(0xFFE2EFE9);
@@ -111,7 +120,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   double _uiScale = 1.3, _btnScale = 1.0, _lyricOffset = 0.0;
   static const platform = MethodChannel('com.nascarplayer/app_retain');
-  static const mediaChannel = MethodChannel('com.nascarplayer/media_control');
   double s(double value) => value * _uiScale;
 
   double _lyricFontSize = 50.0, _maxCacheGB = 2.0;
@@ -135,11 +143,13 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
     // 设置audioHandler的回调，用于处理MediaSession的切歌事件
     audioHandler.onNextCallback = () {
+      addLog("✅ [MediaSession] 触发: 下一曲 (方向盘 Next)");
       if (_checkDebounce()) return;
       _playNextSong(manual: true);
       _resetScreenSaverTimer();
     };
     audioHandler.onPrevCallback = () {
+      addLog("✅ [MediaSession] 触发: 上一曲 (方向盘 Prev)");
       if (_checkDebounce()) return;
       _playPrevSong();
       _resetScreenSaverTimer();
@@ -159,58 +169,27 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     });
     globalPlayer.stream.completed.listen((c) { if (c) _playNextSong(manual: false); });
 
-    // 方案 A: 全局硬件键盘监听（拦截方向盘 KeyEvent）
-    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
-
-    // 方案 C: 监听原生 Android MethodChannel 转发的媒体按键
-    mediaChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onMediaButton') {
-        String key = call.arguments;
-        if (key == 'NEXT' || key == 'PLAY_PAUSE' || key == 'PLAY') {
-          if (key == 'NEXT') {
-            if (_checkDebounce()) return;
-            _playNextSong(manual: true);
-            _resetScreenSaverTimer();
-          } else {
-            _togglePlayPause();
-          }
-        } else if (key == 'PREVIOUS') {
-          if (_checkDebounce()) return;
-          _playPrevSong();
-          _resetScreenSaverTimer();
-        } else if (key == 'PAUSE') {
-          if (isPlaying) globalPlayer.pause();
+    // 日志流订阅
+    _logStream.stream.listen((log) {
+      if (!mounted) return;
+      setState(() => _logs.add(log));
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_logScrollController.hasClients) {
+          _logScrollController.animateTo(_logScrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
         }
-      }
+      });
     });
-  }
-
-  bool _handleKeyEvent(KeyEvent event) {
-    if (event is KeyDownEvent) {
-      if (event.logicalKey == LogicalKeyboardKey.mediaTrackNext) {
-        if (_checkDebounce()) return true;
-        _playNextSong(manual: true);
-        _resetScreenSaverTimer();
-        return true;
-      } else if (event.logicalKey == LogicalKeyboardKey.mediaTrackPrevious) {
-        if (_checkDebounce()) return true;
-        _playPrevSong();
-        _resetScreenSaverTimer();
-        return true;
-      } else if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
-        _togglePlayPause();
-        return true;
-      }
-    }
-    return false;
+    addLog("APP 启动，等待接收车机方向盘指令...");
+    addLog("监听通道: MediaSession (AudioService)");
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     _playbackSaveTimer?.cancel();
     _lyricScrollController.dispose(); _miniLyricScrollController.dispose(); _playlistScrollController.dispose();
+    _logScrollController.dispose();
     _spinController.dispose(); super.dispose();
   }
 
@@ -650,6 +629,34 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("大屏歌词字号: ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _lyricFontSize, min: 30.0, max: 100.0, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _lyricFontSize = val); _prefs.setDouble('lyricFontSize', val); })), Text(_lyricFontSize.toInt().toString(), style: TextStyle(fontSize: s(20)))])),
           Padding(padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)), child: Row(children: [Text("最大离线缓存 (GB): ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(24))), Expanded(child: Slider(value: _maxCacheGB, min: 0.5, max: 20.0, divisions: 39, activeColor: Colors.blueAccent, onChanged: (val) { setState(() => _maxCacheGB = val); _prefs.setDouble('maxCacheGB', val); })), Text(_maxCacheGB.toStringAsFixed(1), style: TextStyle(fontSize: s(20)))])),
 
+          SizedBox(height: s(48)),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text("方向盘按键调试日志", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+            TextButton.icon(
+              icon: Icon(Icons.delete_outline, size: s(24), color: Colors.redAccent),
+              label: Text("清空", style: TextStyle(fontSize: s(22), color: Colors.redAccent)),
+              onPressed: () => setState(() => _logs.clear()),
+            ),
+          ]),
+          SizedBox(height: s(12)),
+          Container(
+            height: s(400),
+            decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(s(12))),
+            child: _logs.isEmpty
+                ? Center(child: Text("暂无日志\n按下方向盘按钮后此处会显示收到的按键", style: TextStyle(color: Colors.white38, fontSize: s(20)), textAlign: TextAlign.center))
+                : ListView.builder(
+                    controller: _logScrollController,
+                    padding: EdgeInsets.symmetric(horizontal: s(12), vertical: s(8)),
+                    itemCount: _logs.length,
+                    itemBuilder: (context, index) {
+                      return Padding(
+                        padding: EdgeInsets.symmetric(vertical: s(2)),
+                        child: Text(_logs[index], style: TextStyle(color: Colors.greenAccent, fontSize: s(18), fontFamily: 'monospace')),
+                      );
+                    },
+                  ),
+          ),
+
           SizedBox(height: s(60)),
           Divider(color: Colors.black12, height: s(60)),
           Center(
@@ -888,18 +895,21 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> play() async {
+    addLog("[MediaSession] play()");
     await player.play();
     _broadcastState(true);
   }
 
   @override
   Future<void> pause() async {
+    addLog("[MediaSession] pause()");
     await player.pause();
     _broadcastState(false);
   }
 
   @override
   Future<void> playPause() async {
+    addLog("[MediaSession] playPause()");
     await player.playOrPause();
     _broadcastState(player.state.playing);
   }
@@ -922,16 +932,19 @@ class MediaKitAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> skipToNext() async {
+    addLog("[MediaSession] skipToNext()");
     if (onNextCallback != null) onNextCallback!();
   }
 
   @override
   Future<void> skipToPrevious() async {
+    addLog("[MediaSession] skipToPrevious()");
     if (onPrevCallback != null) onPrevCallback!();
   }
 
   @override
   Future<void> click([MediaButton button = MediaButton.media]) async {
+    addLog("[MediaSession] click($button)");
     switch (button) {
       case MediaButton.media:
         await player.playOrPause();
