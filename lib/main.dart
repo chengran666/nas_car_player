@@ -559,9 +559,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, leading: IconButton(icon: Icon(Icons.arrow_back, color: Colors.black87, size: s(36)), onPressed: () { setState(() { currentLeftScreen = 0; }); }), title: Text('系统设置', style: TextStyle(color: Colors.black87, fontSize: s(28), fontWeight: FontWeight.bold))),
-      body: ListView(
+      body: SingleChildScrollView(
         padding: EdgeInsets.all(s(48)),
-        children: [
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("已配置的 WebDAV 节点", style: TextStyle(fontSize: s(26), fontWeight: FontWeight.bold, color: Colors.blueAccent)), ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.black87, padding: EdgeInsets.symmetric(horizontal: s(24), vertical: s(12))), icon: Icon(Icons.add, size: s(28)), label: Text("添加", style: TextStyle(fontSize: s(24))), onPressed: () => _showAddWebDAVDialog())]),
           SizedBox(height: s(24)),
           ...webdavAccounts.asMap().entries.map((entry) { int idx = entry.key; var acc = entry.value; return Card(color: Colors.white.withOpacity(0.6), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(s(12))), child: ListTile(contentPadding: EdgeInsets.all(s(12)), leading: Icon(Icons.cloud_queue, color: Colors.blueAccent, size: s(36)), title: Text(acc['name'], style: TextStyle(fontWeight: FontWeight.bold, fontSize: s(26))), subtitle: Text(acc['url'], style: TextStyle(fontSize: s(20))), trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: Icon(Icons.edit, color: Colors.black54, size: s(36)), onPressed: () => _showAddWebDAVDialog(editIndex: idx)), IconButton(icon: Icon(Icons.delete, color: Colors.redAccent, size: s(36)), onPressed: () { setState(() { if (activeAccount == webdavAccounts[idx]) activeAccount = null; webdavAccounts.removeAt(idx); _prefs.setString('webdavAccounts', jsonEncode(webdavAccounts)); }); })]))); }).toList(),
@@ -670,6 +672,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
             ),
           ),
         ],
+        ),
       ),
     );
   }
