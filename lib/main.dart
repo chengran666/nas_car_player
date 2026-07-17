@@ -40,6 +40,7 @@ Future<void> main() async {
         androidShowNotificationBadge: true,
         androidNotificationIcon: 'mipmap/ic_launcher',
         androidResumeOnClick: true,
+        androidStopForegroundOnPause: false,  // 关键：暂停不停止前台服务，保持MediaSession活跃
       ),
     ) as MediaKitAudioHandler;
 
@@ -212,12 +213,24 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       return false;
     });
 
-    // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）
-    // 仅记录日志，不执行操作，避免与 MediaSession 重复处理
+    // Native MethodChannel 监听（接收 MainActivity.kt 转发的按键）- 兜底方案
     mediaChannel.setMethodCallHandler((call) async {
       if (call.method == 'onMediaButton') {
         String key = call.arguments;
-        addLog("🔵 [Native广播] 捕获(仅记录): $key");
+        addLog("✅ [Native广播] 捕获: $key");
+        if (key == 'NEXT') {
+          if (_checkDebounce()) return;
+          _playNextSong(manual: true);
+          _resetScreenSaverTimer();
+        } else if (key == 'PREVIOUS') {
+          if (_checkDebounce()) return;
+          _playPrevSong();
+          _resetScreenSaverTimer();
+        } else if (key == 'PLAY_PAUSE' || key == 'PLAY') {
+          _togglePlayPause();
+        } else if (key == 'PAUSE') {
+          if (isPlaying) globalPlayer.pause();
+        }
       }
     });
   }
@@ -242,6 +255,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkOverlayPermission();
+      // 从后台恢复时刷新MediaSession状态
+      audioHandler._broadcastState(isPlaying);
     }
   }
 
@@ -254,7 +269,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   bool _checkDebounce() {
     final now = DateTime.now();
-    if (now.difference(_lastEventTime).inMilliseconds < 400) return true;
+    if (now.difference(_lastEventTime).inMilliseconds < 250) return true;
     _lastEventTime = now;
     return false;
   }
