@@ -25,7 +25,6 @@ void addLog(String message) {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const NasCarPlayerApp());
 
   try {
     audioHandler = await AudioService.init(
@@ -43,6 +42,8 @@ Future<void> main() async {
   } catch (e) {
     addLog("音频服务初始化失败: $e");
   }
+
+  runApp(const NasCarPlayerApp());
 }
 
 class NasCarPlayerApp extends StatelessWidget {
