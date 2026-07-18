@@ -32,9 +32,6 @@ Future<void> main() async {
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.nascarplayer.channel.audio',
         androidNotificationChannelName: 'NAS Car Player',
-        androidShowNotificationBadge: true,
-        androidNotificationIcon: 'mipmap/ic_launcher',
-        androidResumeOnClick: true,
         androidNotificationOngoing: true,
       ),
     );
