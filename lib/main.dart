@@ -304,6 +304,17 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
       }
     });
 
+    bool isFirstLaunch = _prefs.getBool('isFirstLaunch') ?? true;
+    if (isFirstLaunch) WidgetsBinding.instance.addPostFrameCallback((_) { _showFirstLaunchSetupDialog(); });
+
+    // 启动其他应用：放在 autoPlay 之前，避免网络请求阻塞导致永远不执行
+    if (_startOtherAppOnBoot && _bootOtherAppPackage.isNotEmpty) {
+      addLog("📱 计划启动其他应用: $_bootOtherAppPackage (延迟 ${_bootOtherAppDelay}s)");
+      Future.delayed(Duration(seconds: _bootOtherAppDelay), () {
+        _launchAppByPackage(_bootOtherAppPackage);
+      });
+    }
+
     if (_autoPlay) {
       String? lfn = _prefs.getString('lastFileName'), lacc = _prefs.getString('lastAccount');
       int lpos = _prefs.getInt('lastPosition') ?? 0;
@@ -312,19 +323,15 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
         if (realNasSongs.contains(lfn)) { await playNasSong(lfn); audioHandler.player.seek(Duration(milliseconds: lpos)); }
       }
     }
-
-    bool isFirstLaunch = _prefs.getBool('isFirstLaunch') ?? true;
-    if (isFirstLaunch) WidgetsBinding.instance.addPostFrameCallback((_) { _showFirstLaunchSetupDialog(); });
-
-    if (_startOtherAppOnBoot && _bootOtherAppPackage.isNotEmpty) {
-      Future.delayed(Duration(seconds: _bootOtherAppDelay), () {
-        _launchAppByPackage(_bootOtherAppPackage);
-      });
-    }
   }
 
   Future<void> _launchAppByPackage(String packageName) async {
-    try { await platform.invokeMethod('launchAppByPackage', {'packageName': packageName}); } catch (_) {}
+    try {
+      final result = await platform.invokeMethod('launchAppByPackage', {'packageName': packageName});
+      addLog("✅ 启动其他应用: $packageName (结果: $result)");
+    } catch (e) {
+      addLog("❌ 启动其他应用失败: $packageName ($e)");
+    }
   }
 
   Future<void> _showAppPickerDialog() async {
@@ -384,7 +391,20 @@ class _MainHomeScreenState extends State<MainHomeScreen> with SingleTickerProvid
 
   void _applyStatusBar() { SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: _showStatusBar ? SystemUiOverlay.values : [SystemUiOverlay.bottom]); }
   void _initClock() { _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) { if (mounted) setState(() { _currentTimeString = "${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}"; }); }); }
-  void _resetScreenSaverTimer() { _screenSaverTimer?.cancel(); if (currentLeftScreen != 2 || _isLargeMode || _screenSaverTimeout == 0) return; _screenSaverTimer = Timer(Duration(seconds: _screenSaverTimeout), () { if (mounted && currentLeftScreen == 2) setState(() => _isLargeMode = true); }); }
+  void _resetScreenSaverTimer() {
+    _screenSaverTimer?.cancel();
+    if (currentLeftScreen != 2 || _isLargeMode || _screenSaverTimeout == 0) {
+      addLog("⏱️ 屏保定时器跳过: screen=$currentLeftScreen, large=$_isLargeMode, timeout=$_screenSaverTimeout");
+      return;
+    }
+    addLog("⏱️ 屏保定时器启动: ${_screenSaverTimeout}s后进入大屏");
+    _screenSaverTimer = Timer(Duration(seconds: _screenSaverTimeout), () {
+      if (mounted && currentLeftScreen == 2) {
+        addLog("⏱️ 屏保定时器触发: 进入大屏模式");
+        setState(() => _isLargeMode = true);
+      }
+    });
+  }
 
   Future<void> _updateCachedFilesList() async {
     try { final dir = await getApplicationDocumentsDirectory(); final cacheDir = Directory('${dir.path}/nas_cache'); if (cacheDir.existsSync() && mounted) setState(() => _cachedFiles = cacheDir.listSync().whereType<File>().map((f) => f.path.split(Platform.pathSeparator).last).toSet()); } catch (_) {}
