@@ -120,23 +120,16 @@ void main() {
     expect(rows.last.details, 'iTunes · 匹配 200');
     expect(rows.last.selectionSource, 'itunes');
   });
-  test('预览复用给定 Dio 和令牌，以二进制读取并复用缓存', () async {
+  test('预览无需令牌，以二进制读取并复用缓存', () async {
     final gate = Completer<ResponseBody>();
     final adapter = PreviewAdapter((_) => gate.future);
     final dio = Dio()..httpClientAdapter = adapter;
-    final loader = CoverPreviewLoader(
-      dio,
-      cancelToken: CancelToken(),
-      headers: {'Authorization': 'Bearer test-token'},
-    );
+    final loader = CoverPreviewLoader(dio, cancelToken: CancelToken());
     final first = loader.load(previewUri);
     final duplicate = loader.load(previewUri);
     await adapter.waitForRequests(1);
     expect(adapter.requests, hasLength(1));
-    expect(
-      adapter.requests.single.headers['Authorization'],
-      'Bearer test-token',
-    );
+    expect(adapter.requests.single.headers['Authorization'], isNull);
     expect(adapter.requests.single.responseType, ResponseType.bytes);
     expect(adapter.requests.single.uri, previewUri);
     gate.complete(imageResponse());

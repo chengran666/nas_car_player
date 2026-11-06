@@ -52,6 +52,9 @@ try {
     check(count($matched) === 1 && $matched[0]['title_match'] && $matched[0]['artist_match'], '简繁标题和双歌手匹配原版候选');
     check(!CoverCandidateService::trustedImageUrl('https://mzstatic.com.evil.example/x'), '拒绝伪造 CDN 主机');
     check(!CoverCandidateService::trustedImageUrl('http://is1.mzstatic.com/x'), '拒绝不安全图片地址');
+    check(!CoverCandidateService::trustedImageUrl('https://is1.mzstatic.com:8443/x'), '拒绝非标准 CDN 端口');
+    check(!CoverCandidateService::trustedImageUrl('https://music@is1.mzstatic.com/x'), '拒绝带用户信息的图片地址');
+    check(!CoverCandidateService::trustedImageUrl('https://127.0.0.1/x'), '拒绝本地回环图片地址');
     $proxyConfig = ['openrouter_proxy' => 'http://127.0.0.1:10809'];
     check(CoverCandidateService::proxyForUrl($proxyConfig, 'https://archive.org/download/cover.jpg') !== '', '受限图片走现有代理');
     check(CoverCandidateService::proxyForUrl($proxyConfig, 'https://api.deezer.com/search') !== '', 'Deezer 查询走现有代理');

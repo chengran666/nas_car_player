@@ -9,6 +9,7 @@ if (!isset($_GET['title']) && in_array($_SERVER['REQUEST_METHOD'] ?? 'GET', ['GE
 }
 
 require __DIR__ . '/src/CoverService.php';
+require_once __DIR__ . '/src/ApiRateLimiter.php';
 
 header('Access-Control-Allow-Origin: *');
 header('X-Content-Type-Options: nosniff');
@@ -36,14 +37,8 @@ if (!is_array($config)) {
     jsonError(500, 'config.php 格式错误');
 }
 
-$requiredToken = trim((string)($config['access_token'] ?? ''));
-if ($requiredToken !== '') {
-    $authorization = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? '');
-    $providedToken = str_starts_with($authorization, 'Bearer ') ? substr($authorization, 7) : (string)($_GET['key'] ?? '');
-    if (!hash_equals($requiredToken, $providedToken)) {
-        jsonError(401, '访问令牌无效');
-    }
-}
+$limits = new ApiRateLimiter($config, (string)($_SERVER['REMOTE_ADDR'] ?? ''));
+enforceApiRateLimit($limits, 'cover');
 
 $title = trim((string)($_GET['title'] ?? ''));
 $artist = trim((string)($_GET['artist'] ?? ''));
@@ -56,7 +51,7 @@ try {
     if (!is_string($_GET['device_id'] ?? '')) throw new InvalidArgumentException('设备识别码无效');
     $deviceId = $_GET['device_id'] ?? '';
     if ($deviceId !== '') header('Cache-Control: private, no-store');
-    $service = new CoverService($config);
+    $service = new CoverService($config, $limits);
     $result = $service->resolve($title, $artist, $refresh, (float)($_GET['duration'] ?? 0), $deviceId);
     $etag = '"' . hash('sha256', $result['bytes']) . '"';
     if ((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
@@ -87,9 +82,11 @@ try {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') {
         echo $result['bytes'];
     }
+} catch (ApiRateLimitExceeded $error) {
+    sendApiRateLimitError($error);
 } catch (InvalidArgumentException $error) {
     jsonError(400, $error->getMessage());
 } catch (Throwable $error) {
     error_log('[cover-api] ' . $error->getMessage());
-    jsonError(502, $error->getMessage());
+    jsonError(502, '封面来源暂不可用，请稍后再试');
 }

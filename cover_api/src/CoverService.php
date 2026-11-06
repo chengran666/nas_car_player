@@ -5,7 +5,7 @@ require_once __DIR__ . '/SongSelectionService.php';
 
 final class CoverService
 {
-    public function __construct(private array $config)
+    public function __construct(private array $config, private ?ApiRateLimiter $limits = null)
     {
         $cacheDir = (string)($this->config['cache_dir'] ?? '');
         if ($cacheDir === '') {
@@ -45,8 +45,16 @@ final class CoverService
             $result = $this->fromITunes($title, $artist)
                 ?? $this->fromLastFm($title, $artist)
                 ?? $this->fromDeezer($title, $artist)
-                ?? $this->fromMusicBrainz($title, $artist)
-                ?? $this->fromOpenRouterSearch($title, $artist);
+                ?? $this->fromMusicBrainz($title, $artist);
+
+            $rateError = null;
+            if ($result === null) {
+                try {
+                    $result = $this->fromOpenRouterSearch($title, $artist);
+                } catch (ApiRateLimitExceeded $error) {
+                    $rateError = $error;
+                }
+            }
 
             if ($result === null) {
                 // 上游临时故障时继续提供已经过期的缓存。
@@ -56,7 +64,7 @@ final class CoverService
                     $stale['stale'] = true;
                     return $stale;
                 }
-                throw new RuntimeException('所有封面源都没有返回可用图片');
+                throw $rateError ?? new RuntimeException('所有封面源都没有返回可用图片');
             }
 
             $this->writeCache($key, $title, $artist, $result);
@@ -217,6 +225,7 @@ final class CoverService
         if ($apiKey === '') {
             return null;
         }
+        $this->limits?->consume('cover_ai');
         $headers = [
             'Authorization: Bearer ' . $apiKey,
             'Content-Type: application/json',
@@ -274,7 +283,6 @@ final class CoverService
             if ($candidateTitle !== '' && !$this->sameText($title, $candidateTitle)) continue;
             if ($candidateArtist !== '' && $artist !== '' && !$this->sameArtist($artist, $candidateArtist)) continue;
             $url = trim((string)($candidate['image_url'] ?? ''));
-            if (!$this->isTrustedSearchImageUrl($url)) continue;
             if (($image = $this->downloadImage($url)) !== null) {
                 return $image + ['source' => 'openrouter-search', 'upstream_url' => $url];
             }
@@ -292,24 +300,6 @@ final class CoverService
             if (is_array($decoded)) return $decoded;
         }
         return [];
-    }
-
-    private function isTrustedSearchImageUrl(string $url): bool
-    {
-        $host = strtolower((string)parse_url($url, PHP_URL_HOST));
-        if (!str_starts_with($url, 'https://') || $host === '') return false;
-        $allowed = [
-            'mzstatic.com',
-            'dzcdn.net',
-            'lastfm.freetls.fastly.net',
-            'coverartarchive.org',
-            'i.discogs.com',
-            'i.scdn.co',
-        ];
-        foreach ($allowed as $domain) {
-            if ($host === $domain || str_ends_with($host, '.' . $domain)) return true;
-        }
-        return false;
     }
 
     private function getJson(string $url, array $headers = []): array
@@ -339,20 +329,9 @@ final class CoverService
 
     private function downloadImage(string $url): ?array
     {
-        if (!str_starts_with($url, 'https://')) {
-            return null;
-        }
         try {
-            $result = $this->request('GET', $url);
+            $bytes = CoverCandidateService::downloadImage($this->config, $url);
         } catch (Throwable) {
-            return null;
-        }
-        if ($result['status'] < 200 || $result['status'] >= 300) {
-            return null;
-        }
-        $bytes = $result['body'];
-        $maxBytes = (int)($this->config['max_image_bytes'] ?? 12582912);
-        if ($bytes === '' || strlen($bytes) > $maxBytes) {
             return null;
         }
         $mime = $this->detectImageMime($bytes);
@@ -369,8 +348,7 @@ final class CoverService
         $headers[] = 'Accept: application/json,image/*;q=0.9,*/*;q=0.1';
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 4,
+            CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_CONNECTTIMEOUT => min(8, $timeout),
             CURLOPT_TIMEOUT => $timeout,
             CURLOPT_USERAGENT => 'NasPlayerCoverAPI/1.0',

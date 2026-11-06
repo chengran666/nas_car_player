@@ -4,6 +4,7 @@ if (PHP_SAPI !== 'cli') { http_response_code(403); exit; }
 $root = $argv[1] ?? dirname(__DIR__);
 $base = rtrim($argv[2] ?? 'https://cover_api.whzxc.com', '/');
 $config = require $root . '/config.php';
+require_once $root . '/src/SongSelectionService.php';
 $title = 'NasSelectionCheck' . bin2hex(random_bytes(6));
 $song = ['title' => $title, 'artist' => 'SelectionTest', 'duration' => 200];
 $deviceA = hash('sha256', $title . ':a'); $deviceB = hash('sha256', $title . ':b');
@@ -16,33 +17,25 @@ $png = "\x89PNG\r\n\x1a\n" . $chunk('IHDR', pack('NNCCCCC', 32, 32, 8, 2, 0, 0, 
 $newPng = "\x89PNG\r\n\x1a\n" . $chunk('IHDR', pack('NNCCCCC', 32, 32, 8, 2, 0, 0, 0)) .
     $chunk('IDAT', gzcompress(str_repeat("\x00" . str_repeat(random_bytes(3), 32), 32))) . $chunk('IEND', '');
 function smokeCheck(bool $ok, string $message): void { if (!$ok) throw new RuntimeException($message); }
-$request = static function (string $path, ?array $payload = null, bool $authorized = true) use ($config, $base): array {
+$request = static function (string $path, ?array $payload = null) use ($base): array {
     $ch = curl_init($base . '/' . $path);
     $headers = ['Content-Type: application/json'];
-    if ($authorized) $headers[] = 'Authorization: Bearer ' . $config['access_token'];
     curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers, CURLOPT_TIMEOUT => 15]);
     if ($payload !== null) { curl_setopt($ch, CURLOPT_POST, true); curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_THROW_ON_ERROR)); }
     $bytes = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
     return [$status, $bytes];
 };
 try {
-    [$status] = $request('selections.php?' . http_build_query($song), null, false);
-    smokeCheck($status === 401, '必须拒绝未鉴权请求');
-    [$status, $bytes] = $request('selections.php', $song + ['kind' => 'lyrics', 'choice' => ['text' => '[00:01]Chosen lyric', 'candidate_id' => 42]]);
-    smokeCheck($status === 200 && json_decode($bytes, true)['success'], '歌词保存接口失败');
-    [$status, $bytes] = $request('selections.php', $song + ['kind' => 'cover', 'choice' => ['image_base64' => base64_encode($png), 'source' => 'test', 'id' => 'selection-check']]);
-    smokeCheck($status === 200 && json_decode($bytes, true)['success'], '封面保存接口失败');
-    $revision = json_decode($bytes, true)['revision'];
+    $legacy = new SongSelectionService($config);
+    $legacy->save($title, $song['artist'], 200, 'lyrics', ['text' => '[00:01]Chosen lyric', 'candidate_id' => 42]);
+    $revision = $legacy->save($title, $song['artist'], 200, 'cover', ['image_base64' => base64_encode($png), 'source' => 'test', 'id' => 'selection-check'])['revision'];
     [$status, $bytes] = $request('selections.php?' . http_build_query($song));
     $selected = json_decode($bytes, true)['selection'];
     smokeCheck($status === 200 && $selected['lyrics']['candidate_id'] === 42 && $selected['cover']['revision'] === $revision, '保存后不能复用两个选择');
     [$status, $bytes] = $request('selections.php?' . http_build_query($song + ['action' => 'image', 'revision' => $revision]));
     smokeCheck($status === 200 && $bytes === $png, '独立封面正文不一致');
-    [$status, $bytes] = $request('selections.php', $song + ['kind' => 'lyrics', 'choice' => ['text' => '[00:02]Latest lyric', 'candidate_id' => 43]]);
-    smokeCheck($status === 200 && json_decode($bytes, true)['success'], '最后一次歌词提交失败');
-    [$status, $bytes] = $request('selections.php', $song + ['kind' => 'cover', 'choice' => ['image_base64' => base64_encode($newPng), 'source' => 'test', 'id' => 'latest-selection-check']]);
-    smokeCheck($status === 200 && json_decode($bytes, true)['success'], '最后一次封面提交失败');
-    $latestRevision = json_decode($bytes, true)['revision'];
+    $legacy->save($title, $song['artist'], 200, 'lyrics', ['text' => '[00:02]Latest lyric', 'candidate_id' => 43]);
+    $latestRevision = $legacy->save($title, $song['artist'], 200, 'cover', ['image_base64' => base64_encode($newPng), 'source' => 'test', 'id' => 'latest-selection-check'])['revision'];
     [$status, $bytes] = $request('selections.php?' . http_build_query($song));
     $latest = json_decode($bytes, true)['selection'];
     smokeCheck($status === 200 && $latest['lyrics']['text'] === '[00:02]Latest lyric' && $latest['lyrics']['candidate_id'] === 43 && $latest['cover']['id'] === 'latest-selection-check', '新客户端读取未返回最后提交的歌词和封面');

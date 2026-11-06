@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/src/CoverCandidateService.php';
+require_once __DIR__ . '/src/ApiRateLimiter.php';
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-store');
 function candidateError(int $status, string $message): never {
@@ -10,9 +11,7 @@ function candidateError(int $status, string $message): never {
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if (!in_array($method, ['GET', 'POST'], true)) candidateError(405, '只支持 GET/POST');
 $config = require __DIR__ . '/config.php';
-$token = trim((string)($config['access_token'] ?? ''));
-$auth = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? '');
-if ($token !== '' && !hash_equals($token, str_starts_with($auth, 'Bearer ') ? substr($auth, 7) : '')) candidateError(401, '访问令牌无效');
+enforceApiRateLimit(new ApiRateLimiter($config, (string)($_SERVER['REMOTE_ADDR'] ?? '')), 'cover_candidates');
 try {
     $input = $_GET;
     if ($method === 'POST') {

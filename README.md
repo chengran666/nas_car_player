@@ -4,7 +4,7 @@ A new Flutter project.
 
 ## 本地构建配置
 
-公共源码不含接口凭据。需要接入自有服务时，在项目根目录创建 `.local-build-defines.json`，填入需要的 `LASTFM_API_KEY`、`COVER_PROXY_TOKEN`，也可用 `COVER_PROXY_URL` 和 `LYRIC_TRANSLATION_API_URL` 指定自有服务地址。`build_apk.bat` 会读取此文件，手动运行 Flutter 时传入 `--dart-define-from-file=.local-build-defines.json`。不要提交此文件，也不要在客户端配置仅供服务端使用的密钥。
+播放器直接访问公开的封面、歌词翻译和选择同步接口。自建服务可通过 `COVER_PROXY_URL` 和 `LYRIC_TRANSLATION_API_URL` 指定地址，`build_apk.bat` 会读取项目根目录的 `.local-build-defines.json`。Last.fm 和 OpenRouter 的密钥只在服务器配置，参见 [服务端部署说明](cover_api/README.md)。
 
 没有项目专用 `android/signing/player.keystore` 时，构建会使用本机 Android 调试签名。发布可覆盖现有安装的升级包时，必须使用原签名；`publish_update.ps1` 会验证签名。服务端配置使用 `cover_api/config.example.php` 作为模板。
 

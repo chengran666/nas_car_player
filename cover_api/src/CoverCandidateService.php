@@ -95,7 +95,7 @@ final class CoverCandidateService
         if (!is_string($bytes)) {
             $url = $preview ? $selected['preview_url'] : $selected['image_url'];
             if (!self::trustedImageUrl($url)) throw new RuntimeException('封面图片地址不可信');
-            $bytes = $this->requestImage($url);
+            $bytes = self::downloadImage($this->config, $url);
             $info = @getimagesizefromstring($bytes);
             if (!is_array($info) || $info[0] < 32 || $info[1] < 32) throw new RuntimeException('来源未返回可用封面图片');
             $this->atomicWrite($file, $bytes);
@@ -125,9 +125,11 @@ final class CoverCandidateService
     public static function trustedImageUrl(string $url): bool
     {
         $parts = parse_url($url);
-        if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https' || isset($parts['user']) || isset($parts['pass'])) return false;
+        if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https' || isset($parts['user'])
+            || isset($parts['pass']) || ($parts['port'] ?? 443) !== 443) return false;
         $host = strtolower((string)($parts['host'] ?? ''));
-        foreach (['mzstatic.com', 'dzcdn.net', 'lastfm.freetls.fastly.net', 'lastfm-img2.akamaized.net', 'coverartarchive.org', 'archive.org'] as $domain) {
+        foreach (['mzstatic.com', 'dzcdn.net', 'lastfm.freetls.fastly.net', 'lastfm-img2.akamaized.net',
+            'coverartarchive.org', 'archive.org', 'i.discogs.com', 'i.scdn.co'] as $domain) {
             if ($host === $domain || str_ends_with($host, '.' . $domain)) return true;
         }
         return false;
@@ -217,24 +219,36 @@ final class CoverCandidateService
         return $result;
     }
 
-    private function requestImage(string $url): string
+    public static function downloadImage(array $config, string $url): string
     {
-        $handle = curl_init($url);
-        $bytes = '';
-        $max = (int)($this->config['max_image_bytes'] ?? 12582912);
-        curl_setopt_array($handle, [CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 4, CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 20, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
-            CURLOPT_SSL_VERIFYPEER => (bool)($this->config['verify_tls'] ?? true),
-            CURLOPT_SSL_VERIFYHOST => (bool)($this->config['verify_tls'] ?? true) ? 2 : 0,
-            CURLOPT_WRITEFUNCTION => static function ($ch, string $chunk) use (&$bytes, $max): int {
-                if (strlen($bytes) + strlen($chunk) > $max) return 0;
-                $bytes .= $chunk; return strlen($chunk);
-            }]);
-        $this->applyProxy($handle, $url);
-        $ok = curl_exec($handle);
-        $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-        curl_close($handle);
-        if ($ok === false || $status < 200 || $status >= 300) throw new RuntimeException('封面图片下载失败');
-        return $bytes;
+        $deadline = microtime(true) + 20;
+        $max = (int)($config['max_image_bytes'] ?? 12582912);
+        for ($hop = 0; $hop <= 4; $hop++) {
+            if (!self::trustedImageUrl($url)) throw new RuntimeException('封面图片地址不可信');
+            $remaining = (int)(1000 * ($deadline - microtime(true)));
+            if ($remaining <= 0) break;
+            $handle = curl_init($url);
+            $bytes = '';
+            curl_setopt_array($handle, [CURLOPT_CONNECTTIMEOUT_MS => min(5000, $remaining),
+                CURLOPT_TIMEOUT_MS => $remaining, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_SSL_VERIFYPEER => (bool)($config['verify_tls'] ?? true),
+                CURLOPT_SSL_VERIFYHOST => (bool)($config['verify_tls'] ?? true) ? 2 : 0,
+                CURLOPT_WRITEFUNCTION => static function ($ch, string $chunk) use (&$bytes, $max): int {
+                    if (strlen($bytes) + strlen($chunk) > $max) return 0;
+                    $bytes .= $chunk; return strlen($chunk);
+                }]);
+            $proxy = self::proxyForUrl($config, $url);
+            if ($proxy !== '') curl_setopt_array($handle, [CURLOPT_PROXY => $proxy, CURLOPT_NOPROXY => '']);
+            $ok = curl_exec($handle);
+            $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+            $redirect = (string)curl_getinfo($handle, CURLINFO_REDIRECT_URL);
+            curl_close($handle);
+            if ($ok === false) break;
+            if ($status >= 200 && $status < 300) return $bytes;
+            if ($status < 300 || $status >= 400 || $redirect === '') break;
+            // Recheck every redirect destination before opening its connection.
+            $url = $redirect;
+        }
+        throw new RuntimeException('封面图片下载失败');
     }
 }

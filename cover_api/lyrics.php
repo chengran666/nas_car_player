@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/src/LyricTranslationService.php';
 require __DIR__ . '/src/DailyTranslationQuota.php';
+require_once __DIR__ . '/src/ApiRateLimiter.php';
 
 header('Access-Control-Allow-Origin: *');
 header('X-Content-Type-Options: nosniff');
@@ -26,12 +27,9 @@ if (!is_file($configFile)) lyricJsonError(500, '缺少 config.php');
 $config = require $configFile;
 if (!is_array($config)) lyricJsonError(500, 'config.php 格式错误');
 
-$requiredToken = trim((string)($config['access_token'] ?? ''));
-if ($requiredToken !== '') {
-    $authorization = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? '');
-    $providedToken = str_starts_with($authorization, 'Bearer ') ? substr($authorization, 7) : '';
-    if (!hash_equals($requiredToken, $providedToken)) lyricJsonError(401, '访问令牌无效');
-}
+$ip = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+$limits = new ApiRateLimiter($config, $ip);
+enforceApiRateLimit($limits, 'translation');
 
 $rawBody = file_get_contents('php://input', false, null, 0, 256 * 1024 + 1);
 if (!is_string($rawBody) || $rawBody === '' || strlen($rawBody) > 256 * 1024) {
@@ -60,18 +58,22 @@ foreach ($lyrics as $line) {
 }
 
 try {
-    $service = new LyricTranslationService($config);
+    $service = new LyricTranslationService($config, limits: $limits);
     // Only trust the web server's resolved peer address, never caller-supplied headers.
-    $quota = new DailyTranslationQuota($config, $deviceId, (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+    $quota = new DailyTranslationQuota($config, $deviceId, $ip);
     $result = $service->translate($title, $artist, $lines, fn(array $missing) => $quota->reserve($title, $artist, $missing));
     header('Content-Type: application/json; charset=utf-8');
     header('X-Lyric-Translation-Cache: ' . (!empty($result['cached']) ? 'HIT' : 'MISS'));
     echo json_encode(['success' => true] + $result,
         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+} catch (ApiRateLimitExceeded $error) {
+    sendApiRateLimitError($error);
 } catch (TranslationQuotaExceeded $error) {
     header('Retry-After: ' . $error->retryAfter);
     lyricJsonError(429, $error->getMessage());
 } catch (Throwable $error) {
     error_log('[lyric-translation-api] ' . $error->getMessage());
-    lyricJsonError(502, $error->getMessage());
+    lyricJsonError(502, str_contains($error->getMessage(), 'not available in your region')
+        ? 'OpenRouter model not available in your region'
+        : '歌词翻译暂不可用，请稍后再试');
 }

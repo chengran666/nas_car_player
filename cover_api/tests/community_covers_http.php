@@ -14,10 +14,9 @@ $image = static fn() => "\x89PNG\r\n\x1a\n" . $chunk('IHDR', pack('NNCCCCC', 512
 $images = [$image(), $image()];
 $revisions = array_map(static fn($image) => hash('sha256', $image), $images);
 function communityHttpCheck(bool $ok, string $message): void { if (!$ok) throw new RuntimeException($message); }
-$request = static function ($path, $payload = null, $authorized = true) use ($base, $config): array {
+$request = static function ($path, $payload = null) use ($base): array {
     $ch = curl_init($base . '/' . $path);
     $headers = ['Content-Type: application/json'];
-    if ($authorized) $headers[] = 'Authorization: Bearer ' . $config['access_token'];
     curl_setopt_array($ch, [CURLOPT_HTTPHEADER => $headers, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20]);
     if ($payload !== null) { curl_setopt($ch, CURLOPT_POST, true); curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_THROW_ON_ERROR)); }
     $bytes = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
@@ -30,8 +29,6 @@ try {
         communityHttpCheck($status === 200, '测试选择保存失败');
     }
     $query = $song + ['source' => 'community', 'device_id' => $ids[3]];
-    [$status] = $request('covers.php?' . http_build_query($query), null, false);
-    communityHttpCheck($status === 401, '未鉴权请求必须拒绝');
     [$status, $bytes] = $request('covers.php?' . http_build_query($query));
     $rows = json_decode((string)$bytes, true, 512, JSON_THROW_ON_ERROR)['candidates'];
     communityHttpCheck($status === 200 && count($rows) === 2 && $rows[0]['votes'] === 2 && $rows[0]['id'] === $revisions[0], '公开来源合并和排序错误');

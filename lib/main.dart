@@ -528,7 +528,6 @@ class SongSelectionClient {
     this.dio,
     this.prefs,
     this.baseUri,
-    this.headers,
     this.log, {
     required this.deviceId,
     this.outboxDirectory,
@@ -562,7 +561,6 @@ class SongSelectionClient {
   final Dio dio;
   final SharedPreferences prefs;
   final Uri baseUri;
-  final Map<String, String>? headers;
   final void Function(String) log;
   final Future<Directory> Function()? outboxDirectory;
   final String deviceId;
@@ -670,7 +668,6 @@ class SongSelectionClient {
           baseUri.resolve('selections.php'),
           data: {...payload, 'choice': choice},
           options: Options(
-            headers: headers,
             sendTimeout: const Duration(seconds: 20),
             receiveTimeout: const Duration(seconds: 15),
           ),
@@ -713,10 +710,7 @@ class SongSelectionClient {
                 'device_id': deviceId,
               }.map((key, value) => MapEntry(key, value.toString())),
             ),
-        options: Options(
-          headers: headers,
-          receiveTimeout: const Duration(seconds: 5),
-        ),
+        options: Options(receiveTimeout: const Duration(seconds: 5)),
       );
       final data = response.data is String
           ? jsonDecode(response.data)
@@ -789,17 +783,9 @@ const String appBuildTime = String.fromEnvironment(
   defaultValue: '终极后台保活版',
 );
 const String appAuthor = "NAS Car Player";
-const String lastFmApiKey = String.fromEnvironment(
-  'LASTFM_API_KEY',
-  defaultValue: '',
-);
 const String coverProxyBaseUrl = String.fromEnvironment(
   'COVER_PROXY_URL',
   defaultValue: 'https://mp3.whzxc.com/',
-);
-const String coverProxyToken = String.fromEnvironment(
-  'COVER_PROXY_TOKEN',
-  defaultValue: '',
 );
 const String defaultLyricTranslationApiUrl = String.fromEnvironment(
   'LYRIC_TRANSLATION_API_URL',
@@ -1480,12 +1466,7 @@ class CoverCandidate {
 
 // 候选预览复用 API 的 Dio，避免图片组件另建 HTTP/TLS 链路。
 class CoverPreviewLoader {
-  CoverPreviewLoader(
-    this.dio, {
-    required this.cancelToken,
-    this.headers,
-    this.onError,
-  }) {
+  CoverPreviewLoader(this.dio, {required this.cancelToken, this.onError}) {
     unawaited(
       cancelToken.whenCancel.then((_) {
         for (final waiter in _waiters) {
@@ -1500,7 +1481,6 @@ class CoverPreviewLoader {
 
   final Dio dio;
   final CancelToken cancelToken;
-  final Map<String, String>? headers;
   final void Function(Uri uri, Object error)? onError;
   final Map<String, Uint8List> _cache = {};
   final Map<String, Future<Uint8List>> _pending = {};
@@ -1542,7 +1522,6 @@ class CoverPreviewLoader {
         cancelToken: cancelToken,
         options: Options(
           responseType: ResponseType.bytes,
-          headers: headers,
           receiveTimeout: const Duration(seconds: 30),
         ),
       );
@@ -3543,7 +3522,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
             _externalDio,
             _prefs,
             Uri.parse(coverProxyBaseUrl),
-            _coverRequestHeaders,
             addLog,
             deviceId: deviceId,
           );
@@ -4313,9 +4291,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
           },
           options: Options(
             contentType: Headers.jsonContentType,
-            headers: coverProxyToken.isEmpty
-                ? null
-                : {'Authorization': 'Bearer $coverProxyToken'},
             receiveTimeout: const Duration(seconds: 90),
           ),
         );
@@ -4694,7 +4669,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
           songName,
           client.imageUri(song, cover['revision']).toString(),
           _externalDio,
-          headers: _coverRequestHeaders,
           expectedGeneration: generation,
           expectedCoverRevision: coverRevision,
         );
@@ -4817,7 +4791,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     String coverUrl,
     Dio dio, {
     bool logFailure = true,
-    Map<String, String>? headers,
     int? expectedGeneration,
     int? expectedCoverRevision,
   }) async {
@@ -4839,11 +4812,7 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     );
     try {
       if (await tempFile.exists()) await tempFile.delete();
-      await dio.download(
-        coverUrl,
-        tempFile.path,
-        options: headers == null ? null : Options(headers: headers),
-      );
+      await dio.download(coverUrl, tempFile.path);
       if (!await _isSupportedCoverFile(tempFile)) {
         throw const FileSystemException('下载内容不是受支持的图片');
       }
@@ -6212,62 +6181,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     }
   }
 
-  Future<String?> _fetchLastFmCover(
-    Dio dio,
-    String title,
-    String artist,
-  ) async {
-    if (lastFmApiKey.isEmpty || title.trim().isEmpty || artist.trim().isEmpty) {
-      return null;
-    }
-    Object? lastFailure;
-    for (final queryArtist in buildArtistSearchVariants(artist)) {
-      try {
-        final response = await dio.get(
-          'https://ws.audioscrobbler.com/2.0/',
-          queryParameters: {
-            'method': 'track.getInfo',
-            'api_key': lastFmApiKey,
-            'artist': queryArtist,
-            'track': title,
-            'autocorrect': 1,
-            'format': 'json',
-          },
-          options: Options(headers: {'User-Agent': 'NasPlayer/1.0 (Android)'}),
-        );
-        final data = response.data is String
-            ? jsonDecode(response.data)
-            : response.data;
-        if (data is! Map || data['track'] is! Map) continue;
-        final track = data['track'] as Map;
-        final resultTitle = track['name']?.toString() ?? '';
-        final resultArtistData = track['artist'];
-        final resultArtist = resultArtistData is Map
-            ? resultArtistData['name']?.toString() ?? ''
-            : resultArtistData?.toString() ?? '';
-        if (!isLikelySameSongText(title, resultTitle) ||
-            !isLikelySameArtistCredit(queryArtist, resultArtist)) {
-          continue;
-        }
-
-        final album = track['album'];
-        final images = album is Map ? album['image'] : null;
-        if (images is! List) continue;
-        for (final image in images.reversed) {
-          if (image is! Map) continue;
-          final url = image['#text']?.toString().trim() ?? '';
-          if (url.startsWith('http')) return url;
-        }
-      } on DioException catch (e) {
-        lastFailure = '状态 ${e.response?.statusCode ?? '网络异常'}';
-      } catch (e) {
-        lastFailure = e;
-      }
-    }
-    if (lastFailure != null) addLog('Last.fm 封面搜索失败（$lastFailure）');
-    return null;
-  }
-
   Future<String?> _downloadMusicBrainzCover(
     String songName,
     String title,
@@ -6326,9 +6239,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         uri.toString(),
         _externalDio,
         logFailure: false,
-        headers: coverProxyToken.isEmpty
-            ? null
-            : {'Authorization': 'Bearer $coverProxyToken'},
         expectedGeneration: expectedGeneration,
       );
       if (cachedPath != null) addLog('已从封面中转服务缓存封面: $songName');
@@ -6526,27 +6436,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     if (!isCurrentSong()) return;
     String? resolvedCover = cachedCoverPath;
     String? remoteCoverFallback;
-    var lastFmTried = false;
-    Future<void> tryLastFm() async {
-      lastFmTried = true;
-      final lastFmCover = await _fetchLastFmCover(
-        _externalDio,
-        metadata.title,
-        queryArtist,
-      );
-      if (lastFmCover == null || !isCurrentSong()) {
-        return;
-      }
-      resolvedCover = await _downloadAndCacheCover(
-        songName,
-        lastFmCover,
-        _externalDio,
-        logFailure: false,
-        expectedGeneration: expectedGeneration,
-      );
-      if (resolvedCover != null) addLog('已从 Last.fm 缓存封面: $songName');
-    }
-
     if (isCurrentSong() &&
         resolvedCover == null &&
         coverProxyBaseUrl.trim().isNotEmpty) {
@@ -6556,11 +6445,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         queryArtist,
         expectedGeneration,
       );
-    }
-
-    final hasMultipleArtists = splitArtistNames(queryArtist).length > 1;
-    if (isCurrentSong() && resolvedCover == null && hasMultipleArtists) {
-      await tryLastFm();
     }
 
     if (isCurrentSong() && resolvedCover == null) {
@@ -6585,9 +6469,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         );
         remoteCoverFallback = finalCover;
       }
-    }
-    if (isCurrentSong() && resolvedCover == null && !lastFmTried) {
-      await tryLastFm();
     }
     if (isCurrentSong() && resolvedCover == null) {
       resolvedCover = await _downloadMusicBrainzCover(
@@ -9492,10 +9373,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         },
       );
 
-  Map<String, String>? get _coverRequestHeaders => coverProxyToken.isEmpty
-      ? null
-      : {'Authorization': 'Bearer $coverProxyToken'};
-
   Future<List<CoverCandidate>> _searchCoverCandidates(
     String title,
     String artist,
@@ -9513,10 +9390,7 @@ class _MainHomeScreenState extends State<MainHomeScreen>
       refresh: refresh,
       duration: duration,
     );
-    final options = Options(
-      headers: _coverRequestHeaders,
-      receiveTimeout: const Duration(seconds: 30),
-    );
+    final options = Options(receiveTimeout: const Duration(seconds: 30));
     Response<dynamic> response;
     try {
       response = source == 'community'
@@ -9591,7 +9465,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     final previewLoader = CoverPreviewLoader(
       _externalDio,
       cancelToken: token,
-      headers: _coverRequestHeaders,
       onError: (uri, error) => addLog(
         '封面预览失败: source=${uri.queryParameters['source']}, '
         'id=${uri.queryParameters['id']}, ${_externalErrorText(error)}',
@@ -9786,7 +9659,6 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         duration: selected.imageDuration(duration),
       ).toString(),
       _externalDio,
-      headers: _coverRequestHeaders,
       expectedGeneration: generation,
       expectedCoverRevision: choice,
     );

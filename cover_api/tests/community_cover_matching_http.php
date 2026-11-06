@@ -9,8 +9,12 @@ matchingHttpCheck(is_string($root) && str_starts_with($root, realpath(sys_get_te
 $process = null;
 try {
     mkdir($root . '/src'); mkdir($root . '/data');
-    foreach (['covers.php', 'src/SongSelectionService.php', 'src/CoverCandidateService.php', 'data/TSCharacters.txt'] as $file) copy(__DIR__ . '/../' . $file, $root . '/' . $file);
-    $config = ['cache_dir' => $root . '/cache', 'access_token' => 'local-test-token'];
+    foreach (['index.php', 'download.php', 'covers.php', 'lyrics.php', 'selections.php',
+        'src/ApiRateLimiter.php', 'src/CoverService.php', 'src/CoverCandidateService.php',
+        'src/SongSelectionService.php', 'src/LyricTranslationService.php', 'src/DailyTranslationQuota.php',
+        'data/TSCharacters.txt'] as $file) copy(__DIR__ . '/../' . $file, $root . '/' . $file);
+    $config = ['cache_dir' => $root . '/cache', 'access_token' => 'ignored-legacy-token',
+        'api_rate_limits' => ['cover_candidates' => [20, 8], 'translation' => [20, 1]]];
     file_put_contents($root . '/config.php', '<?php return ' . var_export($config, true) . ';');
     $chunk = static fn($type, $data) => pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
     $png = "\x89PNG\r\n\x1a\n" . $chunk('IHDR', pack('NNCCCCC', 32, 32, 8, 2, 0, 0, 0)) .
@@ -29,14 +33,14 @@ try {
         if ($probe !== false) { fclose($probe); break; }
         usleep(20000);
     }
-    $request = static function (string $method, array $input, ?string $body = null, bool $authorized = true) use ($address): array {
-        $url = 'http://' . $address . '/covers.php' . ($method === 'GET' ? '?' . http_build_query($input) : '');
-        $headers = ['Content-Type: application/json'];
-        if ($authorized) $headers[] = 'Authorization: Bearer local-test-token';
+    $request = static function (string $method, array $input, ?string $body = null,
+        string $path = '/covers.php', array $extraHeaders = []) use ($address): array {
+        $url = 'http://' . $address . $path . ($method === 'GET' ? '?' . http_build_query($input) : '');
+        $headers = array_merge(['Content-Type: application/json'], $extraHeaders);
         $context = stream_context_create(['http' => ['method' => $method, 'header' => implode("\r\n", $headers), 'content' => $method === 'POST' ? ($body ?? json_encode($input)) : '', 'ignore_errors' => true, 'timeout' => 5]]);
         $bytes = file_get_contents($url, false, $context);
         preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $match);
-        return [(int)($match[1] ?? 0), $bytes];
+        return [(int)($match[1] ?? 0), $bytes, implode("\n", $http_response_header)];
     };
     $query = ['source' => 'community', 'title' => 'Summer Nigh', 'artist' => 'Singer', 'duration' => 200, 'device_id' => str_repeat('f', 64), 'lyrics' => $lyrics];
     [$status, $body] = $request('POST', $query);
@@ -50,11 +54,21 @@ try {
     $query['title'] = 'Summer Night'; unset($query['lyrics']);
     [$status, $body] = $request('GET', $query);
     matchingHttpCheck($status === 200 && json_decode((string)$body, true)['candidates'][0]['id'] === $revision, '旧 GET 精确候选仍可使用');
-    matchingHttpCheck($request('POST', $query, null, false)[0] === 401, 'POST 仍要求鉴权');
     matchingHttpCheck($request('POST', $query, '{invalid-json')[0] === 400, '无效 JSON 返回 400');
     matchingHttpCheck($request('POST', $query + ['lyrics' => ['bad']])[0] === 400, '拒绝非字符串歌词');
     matchingHttpCheck($request('POST', $query + ['lyrics' => str_repeat('a', 262145)])[0] === 400, '拒绝超长歌词');
     matchingHttpCheck($request('POST', array_replace($query, ['source' => 'itunes']))[0] === 405, 'POST 不会触发其他来源请求');
+    [$status, , $headers] = $request('POST', $query, extraHeaders: ['X-Forwarded-For: 198.51.100.1']);
+    matchingHttpCheck($status === 429 && preg_match('/^Retry-After: [1-9][0-9]*$/mi', $headers), '超过日额度后返回 429，伪造转发 IP 无效');
+    $song = ['title' => 'Summer Night', 'artist' => 'Singer', 'duration' => 200];
+    matchingHttpCheck($request('GET', $song, path: '/selections.php')[0] === 200, '无令牌可读取偏好');
+    $write = $song + ['kind' => 'lyrics', 'choice' => ['text' => $lyrics]];
+    matchingHttpCheck($request('POST', $write, path: '/selections.php')[0] === 400, '拒绝缺少设备码的公共覆盖');
+    matchingHttpCheck($request('POST', $write + ['device_id' => str_repeat('a', 64)], path: '/selections.php')[0] === 200, '提供设备码即可无令牌写入偏好');
+    [$status, $bytes] = $request('GET', $song + ['device_id' => str_repeat('a', 64)], path: '/index.php');
+    matchingHttpCheck($status === 200 && $bytes === $png, "无令牌可读取已缓存的默认封面（HTTP {$status}）");
+    matchingHttpCheck($request('POST', [], '{}', '/lyrics.php')[0] === 400, '无令牌可进入翻译请求校验');
+    matchingHttpCheck($request('POST', [], '{}', '/lyrics.php')[0] === 429, '翻译接口按请求次数限流');
     echo "Community cover matching HTTP checks passed\n";
 } finally {
     if (is_resource($process)) { proc_terminate($process); proc_close($process); }

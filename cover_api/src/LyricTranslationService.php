@@ -7,8 +7,12 @@ final class LyricTranslationService
     private string $referenceDir;
     private ?Closure $translator;
     private ?Closure $transport;
-    public function __construct(private array $config, ?callable $translator = null, ?callable $transport = null)
-    {
+    public function __construct(
+        private array $config,
+        ?callable $translator = null,
+        ?callable $transport = null,
+        private ?ApiRateLimiter $limits = null,
+    ) {
         $root = rtrim((string)($config['cache_dir'] ?? ''), '/\\');
         if ($root === '') throw new RuntimeException('cache_dir 未配置');
         // 新命名空间不复用旧版整首/错位翻译缓存。
@@ -152,6 +156,8 @@ final class LyricTranslationService
         $url = (string)($this->config['openrouter_chat_url'] ?? 'https://openrouter.ai/api/v1/chat/completions');
         try {
             $response = $this->postJson($url, $payload, $headers);
+        } catch (ApiRateLimitExceeded $error) {
+            throw $error;
         } catch (Throwable $error) {
             if (!$search) throw $error;
             // Provider/plugin failures must not disable ordinary translation.
@@ -221,6 +227,7 @@ final class LyricTranslationService
 
     private function postJson(string $url, array $payload, array $headers): array
     {
+        $this->limits?->consume('translation_ai');
         if ($this->transport !== null) return ($this->transport)($url, $payload, $headers);
         $ch = curl_init($url);
         if ($ch === false) throw new RuntimeException('无法初始化上游请求');

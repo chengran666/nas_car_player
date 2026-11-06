@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/src/SongSelectionService.php';
+require_once __DIR__ . '/src/ApiRateLimiter.php';
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-store');
 function selectionError(int $status, string $message): never {
@@ -10,9 +11,8 @@ function selectionError(int $status, string $message): never {
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if (!in_array($method, ['GET', 'POST'], true)) selectionError(405, '只支持 GET/POST');
 $config = require __DIR__ . '/config.php';
-$token = trim((string)($config['access_token'] ?? ''));
-$auth = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? '');
-if ($token !== '' && !hash_equals($token, str_starts_with($auth, 'Bearer ') ? substr($auth, 7) : '')) selectionError(401, '访问令牌无效');
+enforceApiRateLimit(new ApiRateLimiter($config, (string)($_SERVER['REMOTE_ADDR'] ?? '')),
+    $method === 'POST' ? 'selection_write' : 'selection_read');
 try {
     $input = $_GET;
     if ($method === 'POST') {
@@ -25,6 +25,7 @@ try {
     if (!is_string($input['device_id'] ?? '')) selectionError(400, '设备识别码无效');
     $service = new SongSelectionService($config, $input['device_id'] ?? '');
     if ($method === 'POST') {
+        if (($input['device_id'] ?? '') === '') throw new InvalidArgumentException('保存选择时需要设备识别码');
         if (!is_array($input['choice'] ?? null) || !is_string($input['kind'] ?? null)) selectionError(400, '选择参数无效');
         $result = $service->save($title, $artist, $duration, $input['kind'], $input['choice']);
     } elseif (($input['action'] ?? '') === 'image') {

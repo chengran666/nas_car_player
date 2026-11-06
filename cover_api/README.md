@@ -12,7 +12,7 @@
 
 ## 部署
 
-需要 PHP 8.1+ 和 cURL 扩展。把整个 `cover_api` 目录上传到 PHP 网站目录：
+需要 PHP 8.1+ 和 cURL、mbstring、SQLite3 扩展。首次部署时将服务端文件上传到 PHP 网站目录，并从配置样例创建实际配置：
 
 ```bash
 cp config.example.php config.php
@@ -23,14 +23,13 @@ cp config.example.php config.php
 ```php
 'lastfm_api_key' => '你的 Last.fm API Key',
 'openrouter_api_key' => '你的 OpenRouter API Key',
-'access_token' => '给播放器使用的随机长字符串',
 ```
 
-也可以通过 `LASTFM_API_KEY`、`OPENROUTER_API_KEY`、`COVER_API_TOKEN` 环境变量配置。
+也可以通过服务器环境变量 `LASTFM_API_KEY` 和 `OPENROUTER_API_KEY` 配置。升级已有站点时保留实际 `config.php` 与缓存，Git 中只提交 `config.example.php`。旧配置中的 `access_token` 可以移除，旧客户端携带的请求头会被忽略。
 
-配置的 `openrouter_model` 只负责联网搜索和筛选候选，不再生成图片。AI 搜索结果必须来自允许的音乐图片 CDN，并通过实际图片格式检测后才会缓存。
+配置的 `openrouter_search_model` 只负责联网搜索和筛选候选，不再生成图片。AI 搜索结果必须来自允许的音乐图片 CDN，并通过实际图片格式检测后才会缓存。
 
-确保 PHP 对 `cache` 目录具有写权限。Nginx 用户需要自行禁止直接访问 `config.php`；Apache 已包含 `.htaccess` 规则。
+确保 PHP 对 `cache` 目录具有写权限。Nginx 加载 `nginx-downloads.conf` 以阻止访问配置与内部缓存，Apache 使用 `.htaccess`。
 
 如果服务器提示 `unable to get local issuer certificate`，应优先安装或配置系统 CA 根证书。也可以暂时在 `config.php` 中设置 `'verify_tls' => false` 排查，但正式公网服务器建议保持 TLS 校验。
 
@@ -42,33 +41,38 @@ cp config.example.php config.php
 https://你的域名/cover_api/?title=被风吹过的夏天&artist=金莎、林俊杰
 ```
 
-设置了 `access_token` 时推荐使用请求头：
-
-```text
-Authorization: Bearer 你的访问令牌
-```
-
 调试时可返回 JSON 元数据：
 
 ```text
 https://你的域名/cover_api/?title=被风吹过的夏天&artist=金莎、林俊杰&format=json
 ```
 
-管理端可增加 `refresh=1` 强制重新搜索并覆盖缓存。OpenRouter 联网搜索会产生模型和搜索费用，请不要把无访问令牌的接口直接暴露到公网。
+请求可加 `refresh=1` 重新查询。公开接口按 PHP 的 `REMOTE_ADDR` 限制每分钟和每日次数。代理部署时，在 Web 服务器上配置可信代理的真实客户端 IP。超过额度返回 HTTP 429 和 `Retry-After`，每日额度按北京时间零点重置。
+
+| 接口 | 单 IP 每分钟 | 单 IP 每日 | 全站每日 |
+| --- | ---: | ---: | ---: |
+| 自动封面 | 40 | 800 | — |
+| 封面候选及预览 | 120 | 1200 | — |
+| 读取歌词与封面选择 | 60 | 1200 | — |
+| 提交选择 | 8 | 60 | 600 |
+| 歌词翻译 | 30 | 240 | — |
+| OpenRouter 封面搜索调用 | 3 | 12 | 100 |
+| OpenRouter 歌词翻译调用 | 15 | 100 | 200 |
+
+在服务端的 `api_rate_limits` 配置中可覆盖默认值，键名见 `src/ApiRateLimiter.php`。翻译仍另外按每设备和每 IP 各 5 首新歌计算，已有译文只消耗普通接口的请求额度。
 
 ## 接入 Flutter 播放器
 
-播放器已经支持这个中转接口。部署完成后，在构建时传入地址和访问令牌：
+播放器默认访问 `https://mp3.whzxc.com/`。使用自建服务时，在构建时传入地址：
 
 ```bash
 flutter build apk --release \
   --dart-define=COVER_PROXY_URL=https://你的域名/cover_api/ \
-  --dart-define=COVER_PROXY_TOKEN=你的访问令牌
+  --dart-define=LYRIC_TRANSLATION_API_URL=https://你的域名/cover_api/lyrics.php
 ```
 
-设置 `COVER_PROXY_URL` 后，播放器会优先调用 PHP 中转服务；不设置则继续使用播放器内原有的直连封面链路。
+播放器优先调用封面中转服务，失败时尝试客户端的公开曲库。
 
-当前 NasPlayer 已内置 `https://mp3.whzxc.com/` 和对应访问令牌，直接运行或打包即可使用。上面的 `--dart-define` 参数用于以后覆盖默认服务器配置。
 
 ## 英文歌词翻译
 
@@ -76,7 +80,6 @@ flutter build apk --release \
 
 ```text
 POST https://你的域名/lyrics.php
-Authorization: Bearer 你的访问令牌
 Content-Type: application/json
 ```
 
@@ -104,7 +107,7 @@ GET /covers.php?title=歌曲名&artist=歌手&source=musicbrainz
 GET /covers.php?title=歌曲名&artist=歌手&source=community&duration=200&device_id=设备识别码
 ```
 
-请求头同样使用 `Authorization: Bearer ...`。响应 `candidates` 包含 `id`、`source`、`title`、`artist`、`album`、匹配评分。每个来源独立缓存七天，`refresh=1` 强制重新查询。来源搜索独立并行查询多个歌手变体，客户端不承担搜索计算。
+响应 `candidates` 包含 `id`、`source`、`title`、`artist`、`album`、匹配评分。每个来源独立缓存七天，`refresh=1` 强制重新查询。来源搜索独立并行查询多个歌手变体，客户端不承担搜索计算。
 
 选择后的图片通过本站代理，`id` 必须来自对应歌曲和来源的候选列表：
 
@@ -116,7 +119,7 @@ GET /covers.php?title=歌曲名&artist=歌手&source=itunes&action=image&id=候�
 
 “其他用户选择”（`source=community`）直接读取服务端已保存的图片，不请求外部封面源。同一图片按内容去重，最多返回 24 项；请求设备自身不计入人数。候选 `id` 为图片内容的 SHA-256，图片请求同样携带 `duration` 和 `device_id`，避免不同录音版本混用。返回 `votes`、`origin_source`，不返回设备标识或缓存文件路径。没有设备统计的旧共享封面标为“历史共享选择”。有 GD 时为可见项按需生成并缓存 256 像素缩略图（过大的图或无 GD 时保留原图）。打开来源只读取统计，不会增加选择人数；手动选定后按现有流程保存个人选择并计票。
 
-新版使用 `POST /covers.php` 查询其他用户的封面，JSON 字段为 `source: community`、`title`、`artist`、`duration`、`device_id`、可选 `lyrics`（当前缓存的原始歌词，最大 256KB，不能使用客户端叠加 AI 译文后的显示文本）。请求仍需 Bearer 鉴权；歌词放在请求体，不出现在网址中。普通播放的默认封面恢复逻辑保持不变，扩展匹配只用于手动选择列表。
+新版使用 `POST /covers.php` 查询其他用户的封面，JSON 字段为 `source: community`、`title`、`artist`、`duration`、`device_id`、可选 `lyrics`（当前缓存的原始歌词，最大 256KB，不能使用客户端叠加 AI 译文后的显示文本）。歌词放在请求体。普通播放的默认封面恢复逻辑保持不变，扩展匹配只用于手动选择列表。
 
 返回顺序为：歌名、歌手和歌词精确匹配 → 歌名歌手精确匹配 → 歌词精确但歌曲信息有差异 → 模糊匹配。同一等级按其他设备最后选择的人数排序，票数不能让模糊结果超过精确结果；相同图片跨歌曲出现时保留最强匹配，不累加跨歌曲票数。歌名和歌手统一简繁、大小写、标点、双歌手顺序。歌词忽略时间与 LRC 元数据标签，使用正文指纹及最多 256 个不同歌词行的指纹比较；常见短词或短句不会作为跨歌曲识别依据。歌曲信息一致但歌词明显不同会降为需核对的模糊结果。不同录音时长、现场/伴奏/混音/不插电版本不混用。
 
@@ -130,15 +133,15 @@ GET /covers.php?title=歌曲名&artist=歌手&source=itunes&action=image&id=候�
 
 部署 `selections.php`、`src/SongSelectionService.php` 以及更新的 `index.php`、`src/CoverService.php`。
 
-`GET /selections.php?title=歌曲名&artist=歌手&duration=秒数` 返回 `selection`，未命中为 `null`。`selection.lyrics` 保存完整歌词正文、候选标识和内容版本；`selection.cover` 保存所选图片元数据和内容版本。读取图片使用同一参数加 `action=image&revision=封面内容版本`。请求头继续使用现有 Bearer 令牌。
+`GET /selections.php?title=歌曲名&artist=歌手&duration=秒数` 返回 `selection`，未命中为 `null`。`selection.lyrics` 保存完整歌词正文、候选标识和内容版本；`selection.cover` 保存所选图片元数据和内容版本。读取图片使用同一参数加 `action=image&revision=封面内容版本`。
 
 `POST /selections.php` 提交 JSON：`title`、`artist`、`duration`、`kind`（`lyrics` 或 `cover`）、`choice`。歌词正文使用 `choice.text`；封面使用 `choice.image_base64` 和候选信息。服务端验证图片格式，保存独立副本，候选列表过期不会影响已选封面。自动封面接口也优先返回手动选择。
 
-播放器启动时读取一次 `ANDROID_ID`，用固定应用前缀生成 SHA-256 `device_id`，不传原始标识。读取、提交、所选图片和普通封面接口都携带相同的 `device_id`（64 位小写十六进制）。服务端按设备和歌曲保存最后选择，设备之间互不覆盖。每种资源分别按“本设备选择 → 选择人数最多的公共结果 → 早期未分设备的默认记录”恢复；旧客户端不传设备码时仍保持原接口行为。
+播放器启动时读取一次 `ANDROID_ID`，用固定应用前缀生成 SHA-256 `device_id`。读取、提交、所选图片和普通封面接口都携带相同的 `device_id`（64 位小写十六进制）。服务端按设备和歌曲保存最后选择。每种资源分别按“本设备选择 → 选择人数最多的公共结果 → 早期未分设备的默认记录”恢复。提交需要设备码，无设备码的请求仍可读取公共结果。
 
-同一设备对同一歌曲、同一种资源只有一票，改选时自动撤销原票，重复提交和普通播放不会加票。同票保持现有默认稳定，歌词与封面分别统计。公共结果带 `selection_scope: community` 和 `votes`，正文与图片都直接使用服务器已保存的副本，不再请求上游。首次访问某首歌曲会自动迁移历史设备选择；后续只读取 `community-*.defaults.json` 小索引，手动选择时才更新统计，不在每次播放时扫描所有设备。整个 `cache/song_selections_v1/` 必须禁止网站直接访问（部署 `nginx-downloads.conf` 并重载 Nginx），资源继续通过已鉴权的接口读取。
+同一设备对同一歌曲、同一种资源只有一票，改选时自动撤销原票，重复提交和普通播放不会加票。同票保持现有默认稳定，歌词与封面分别统计。公共结果带 `selection_scope: community` 和 `votes`，正文与图片都直接使用服务器已保存的副本，不再请求上游。首次访问某首歌曲会自动迁移历史设备选择；后续只读取 `community-*.defaults.json` 小索引，手动选择时才更新统计，不在每次播放时扫描所有设备。整个 `cache/song_selections_v1/` 必须禁止网站直接访问（部署 `nginx-downloads.conf` 并重载 Nginx），资源通过限流的接口读取。
 
-同一设备、安卓用户和 APK 签名下卸载重装后可恢复，无需注册或 Google 服务。恢复出厂设置、更换用户或签名可能改变标识。标识异常时只保存本地选择，不回退成公共写入。设备码用于区分偏好，Bearer 令牌仍负责接口鉴权。自动候选、图片内容副本和逐行翻译缓存仍可共享，避免重复请求及存储。
+同一设备、安卓用户和 APK 签名下卸载重装后可恢复，无需注册或 Google 服务。恢复出厂设置、更换用户或签名可能改变标识。标识异常时只保存本地选择，不回退成公共写入。公开接口通过设备码区分偏好。设备码由客户端提供，可被知道该值的调用方复用。自动候选、图片内容副本和逐行翻译缓存仍可共享，避免重复请求及存储。
 
 选择永久保存在 `cache/song_selections_v1/`，不参与候选的七天过期。歌曲名与歌手统一大小写、空白、简繁和双歌手顺序；保留版本词，并允许时长三秒以内的差异。多个录音版本且请求无时长时不自动猜测。歌词和封面分开更新，以文件锁和原子写入保证互不覆盖。
 
@@ -152,6 +155,7 @@ php tests/selection_popularity.php
 php tests/community_covers.php
 php tests/community_cover_matching.php
 php tests/community_cover_matching_http.php
+php tests/api_rate_limit_regression.php
 php tests/translation_reference.php
 ```
 
@@ -170,7 +174,7 @@ php tests/translation_reference.php
 
 也支持 `socks5h://127.0.0.1:10808`，其中 `socks5h` 让代理端解析目标域名。OpenRouter 歌词翻译和 AI 封面搜索使用该代理；Deezer、MusicBrainz、Cover Art Archive / archive.org 的请求和图片也复用代理，iTunes 保持直连。可用 `cover_proxy` 单独覆盖封面代理（空字符串表示封面直连）。配置的代理故障会返回上游请求失败，不自动回退到受地区限制的直连出口。
 
-客户端候选预览通过同一个 Dio 客户端带令牌读取二进制图片，再用 `Image.memory` 显示；预览最多三个并发，内存最多缓存 2MB / 16 张，关闭窗口取消请求。失败时显示重试按钮，并记录来源、候选标识和具体原因。
+客户端候选预览通过同一个 Dio 客户端读取二进制图片，再用 `Image.memory` 显示；预览最多三个并发，内存最多缓存 2MB / 16 张，关闭窗口取消请求。失败时显示重试按钮，并记录来源、候选标识和具体原因。
 
 ## 应用升级
 

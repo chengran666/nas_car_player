@@ -1,6 +1,11 @@
 Options -Indexes
 
-<FilesMatch "^(config\.php|config\.example\.php)$">
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(?:cache|src|data|tests|tools)(?:/|$) - [F,L]
+</IfModule>
+
+<FilesMatch "^(config\.php|config\.example\.php|requests\.sqlite3(-[a-z]+)?)$">
     Require all denied
 </FilesMatch>
 

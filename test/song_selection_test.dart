@@ -37,7 +37,6 @@ void main() {
     dio,
     prefs,
     Uri.parse('https://example.test/'),
-    {'Authorization': 'Bearer test-token'},
     (_) {},
     outboxDirectory: directory,
     deviceId: deviceId,
@@ -89,10 +88,7 @@ void main() {
     expect(adapter.requests, hasLength(2));
     expect(adapter.requests.first.uri.queryParameters['duration'], '200.0');
     expect(adapter.requests.first.uri.queryParameters['device_id'], deviceA);
-    expect(
-      adapter.requests.first.headers['Authorization'],
-      'Bearer test-token',
-    );
+    expect(adapter.requests.first.headers['Authorization'], isNull);
     final image = service.imageUri(song, 'revision');
     expect(image.queryParameters['action'], 'image');
     expect(image.queryParameters['revision'], 'revision');

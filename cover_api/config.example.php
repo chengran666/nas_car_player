@@ -20,8 +20,12 @@ return [
     'openrouter_chat_url' => getenv('OPENROUTER_CHAT_URL') ?: 'https://openrouter.ai/api/v1/chat/completions',
     'openrouter_proxy' => getenv('OPENROUTER_PROXY') ?: '',
 
-    // 对外部署时建议设置访问令牌，避免别人消耗你的 OpenRouter 额度。
-    'access_token' => getenv('COVER_API_TOKEN') ?: '',
+    // [单 IP 每分钟, 单 IP 每日, 全站每日（0 表示无全站限制）]。
+    // 仅需配置想覆盖的接口，其他接口使用 ApiRateLimiter 默认值。
+    'api_rate_limits' => [
+        'cover_ai' => [3, 12, 100],
+        'translation_ai' => [15, 100, 200],
+    ],
     'cache_dir' => __DIR__ . '/cache',
     'cache_ttl_days' => 365,
     'request_timeout_seconds' => 15,
