@@ -1,6 +1,10 @@
 @echo off
 rem 💡 强制使用 UTF-8 编码，防止终端中文乱码
 chcp 65001 >nul
+setlocal
+cd /d "%~dp0"
+set "LOCAL_BUILD_DEFINES="
+if exist .local-build-defines.json set "LOCAL_BUILD_DEFINES=--dart-define-from-file=.local-build-defines.json"
 
 echo =======================================================
 echo     🚀 NAS Car Player 一键全自动化打包流水线启动 🚀
@@ -14,14 +18,24 @@ echo.
 
 echo 📦 [1/2] 正在编译全架构通用大包 (Fat APK)...
 rem 💡 注意：在 bat 里调用 flutter 必须加 call，否则打完第一个包脚本就会闪退
-call flutter build apk --release --dart-define=BUILD_TIME="%BUILD_TIME%"
+call flutter build apk --release %LOCAL_BUILD_DEFINES% --dart-define=BUILD_TIME="%BUILD_TIME%"
+if errorlevel 1 goto build_failed
 
 echo.
 echo ✂️ [2/2] 正在编译 32/64位 独立瘦身包 (Split APK)...
-call flutter build apk --split-per-abi --release --dart-define=BUILD_TIME="%BUILD_TIME%"
+call flutter build apk --split-per-abi --release %LOCAL_BUILD_DEFINES% --dart-define=BUILD_TIME="%BUILD_TIME%"
+if errorlevel 1 goto build_failed
 
 echo.
 echo =======================================================
 echo   ✅ 全部编译搞定！请去 build\app\outputs\flutter-apk\ 收货！
 echo =======================================================
 pause
+exit /b 0
+
+:build_failed
+echo.
+echo ❌ 打包失败，本次没有完成全部 APK 的生成。
+echo 请查看上面的错误信息；输出目录里可能还保留着之前的 APK。
+pause
+exit /b 1

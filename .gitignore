@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Keep the existing signing identity portable, but never commit private keys.
+/android/signing/*.keystore
+/.local-build-defines.json

@@ -16,14 +16,62 @@ class MainActivity: AudioServiceActivity() {
     private val MEDIA_CHANNEL = "com.nascarplayer/media_control"
     private var methodChannel: MethodChannel? = null
     private var mediaMethodChannel: MethodChannel? = null
+    private val appUpdater by lazy { AppUpdater(this) }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (!appUpdater.onActivityResult(requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        val desktopChannel = methodChannel
+        DesktopLyricsController.get(this).onLockChanged = { locked ->
+            desktopChannel?.invokeMethod("onDesktopLyricsLockChanged", locked)
+        }
+        DesktopLyricsController.get(this).onEnabledChanged = { enabled ->
+            desktopChannel?.invokeMethod("onDesktopLyricsEnabledChanged", enabled)
+        }
+        DesktopLyricsController.get(this).onWidthChanged = { width ->
+            desktopChannel?.invokeMethod("onDesktopLyricsWidthChanged", width)
+        }
         mediaMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MEDIA_CHANNEL)
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
+                "setDesktopLyricsColor" -> {
+                    DesktopLyricsController.get(this).setColor(call.argument<Number>("color")?.toInt() ?: -1)
+                    result.success(null)
+                }
+                "getAppVersion", "getUpdateDownloadPath", "canInstallUpdates", "requestInstallPermission", "installUpdate", "saveUpdateToDownloads" -> {
+                    try { appUpdater.handle(call, result) }
+                    catch (e: Exception) { result.error("UPDATE_FAILED", e.message, null) }
+                }
+                "configureDesktopLyrics", "setDesktopLyrics", "setDesktopPlaybackClock", "resetDesktopLyricsPosition" -> {
+                    try {
+                        val controller = DesktopLyricsController.get(this)
+                        when (call.method) {
+                            "configureDesktopLyrics" -> controller.configure(call.arguments as? Map<*, *> ?: emptyMap<String, Any>())
+                            "setDesktopLyrics" -> controller.setLyrics(call.arguments as? Map<*, *> ?: emptyMap<String, Any>())
+                            "setDesktopPlaybackClock" -> controller.setPlaybackClock(call.arguments as? Map<*, *> ?: emptyMap<String, Any>())
+                            else -> controller.resetPosition()
+                        }
+                        result.success(if (call.method == "configureDesktopLyrics")
+                            mapOf("locked" to controller.isLocked, "enabled" to controller.isEnabled,
+                                "widthFraction" to controller.savedWidthFraction) else null)
+                    } catch (e: Exception) {
+                        result.error("DESKTOP_LYRICS_FAILED", e.message, null)
+                    }
+                }
+                "getAndroidId" -> {
+                    try {
+                        result.success(Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID))
+                    } catch (e: Exception) {
+                        result.error("DEVICE_ID_FAILED", e.message, null)
+                    }
+                }
                 "sendToBackground" -> {
                     try {
                         moveTaskToBack(true)
@@ -90,6 +138,17 @@ class MainActivity: AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        DesktopLyricsController.get(this).setForeground(true)
+        DesktopLyricsController.get(this).setInstallUIActive(false)
+    }
+
+    override fun onStop() {
+        DesktopLyricsController.get(this).setForeground(false)
+        super.onStop()
     }
 
     // 拦截方向盘多媒体按键，通过 MethodChannel 传递给 Flutter

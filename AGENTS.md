@@ -24,6 +24,16 @@ call flutter build apk --split-per-abi --release --dart-define=BUILD_TIME="<time
 
 The `call` keyword in .bat is critical — without it the script exits after the first `flutter` command.
 
+If `.local-build-defines.json` exists, include `--dart-define-from-file=.local-build-defines.json` in both manual builds. `build_apk.bat` already does this. Keep this file, the signing keystore, and `cover_api/config.php` out of Git.
+
+## Versioning and release policy
+
+- `pubspec.yaml` uses `versionName+versionCode`. Keep the dotted version name; use `yyyyMMddNN` for the numeric version code, e.g. `1.0.12+2026101202`.
+- Use **Asia/Shanghai** for the date. `NN` is the two-digit release sequence for that day (`01` through `99`), starting again at `01` on a new day.
+- Count releases, not code edits, build attempts, or ABI packages. Reserve the next sequence for the pending release; revisions and retries of that same release retain it. Before building for publication, check the date and published history and ensure the new code is strictly greater than the installed/published code.
+- Universal and all split APKs must use exactly the same code. Keep the existing Gradle versionCode override; do not increment the code separately inside the two build commands.
+- After edits, update the local version only. **Do not upload APKs, deploy PHP, or publish automatically.** Publish only when the user explicitly requests it. Do not relabel already published APKs or rewrite their metadata without rebuilding.
+
 ## Dependencies worth knowing
 
 | Package | Purpose |
