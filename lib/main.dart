@@ -19,6 +19,20 @@ import 'dart:math' show min, max, pi, atan2, cos, sin, Random;
 import 'package:flutter/foundation.dart'
     show compute, ValueListenable, listEquals;
 
+class CarViewport {
+  const CarViewport(this.size);
+
+  final Size size;
+  bool get wide => size.width >= 740 && size.width >= size.height * 1.18;
+  double get sidebarWidth => min(size.width * .30, 400.0);
+  double get scaleLimit => max(
+    .55,
+    min((size.width - (wide ? sidebarWidth : 0)) / 440, size.height / 300),
+  );
+  double get largeScaleLimit =>
+      max(.55, min(size.width / 420, size.height / 320));
+}
+
 // The library remains in NAS order; this copy is the actual transport queue.
 // Refreshes retain the shuffled order and append only newly discovered songs.
 List<String> buildPlaybackOrder(
@@ -2327,14 +2341,16 @@ class _MainHomeScreenState extends State<MainHomeScreen>
   double _uiScale = 1.3, _btnScale = 1.0, _lyricOffset = 0.0;
   static const platform = MethodChannel('com.nascarplayer/app_retain');
   static const mediaChannel = MethodChannel('com.nascarplayer/media_control');
-  double s(double value) => value * _uiScale;
+  CarViewport _viewport = const CarViewport(Size(1280, 720));
+  double s(double value) => value * min(_uiScale, _viewport.scaleLimit);
 
   double _lyricFontSize = 50.0, _maxCacheGB = 2.0;
   double _largeLyricFontSize = 34.0, _largeUiScale = 1.5;
   double _largeClockFontSize = 70.0;
 
-  double _stageSize(double value) =>
-      s(value) * (_isLargeMode ? _largeUiScale / _uiScale : 1.0);
+  double _stageSize(double value) => _isLargeMode
+      ? value * min(_largeUiScale, _viewport.largeScaleLimit)
+      : s(value);
   int _screenSaverTimeout = 8, _bootDelay = 5;
   bool _autoPlay = false,
       _showStatusBar = false,
@@ -7089,98 +7105,334 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         stops: [0.0, 0.05, 0.95, 1.0],
       ).createShader(bounds),
       blendMode: BlendMode.dstIn,
-      child: NotificationListener<ScrollNotification>(
-        onNotification: (notification) {
-          final isUserDrag =
-              notification is ScrollStartNotification &&
-                  notification.dragDetails != null ||
-              notification is ScrollUpdateNotification &&
-                  notification.dragDetails != null;
-          if (isUserDrag) _holdLyricAutoScroll();
-          return false;
-        },
-        child: ListView.builder(
-          scrollCacheExtent: const ScrollCacheExtent.pixels(500),
-          controller: isMini
-              ? _miniLyricScrollController
-              : _lyricScrollController,
-          padding: EdgeInsets.symmetric(
-            vertical: isMini
-                ? s(90.0)
-                : MediaQuery.of(context).size.height / 3.5,
-          ),
-          physics: const ClampingScrollPhysics(),
-          itemCount: parsedLyrics.length,
-          itemBuilder: (context, index) {
-            final lyricFontSize = _isLargeMode
-                ? _stageSize(_largeLyricFontSize)
-                : _lyricFontSize;
-            final lyricParts = parsedLyrics[index]['text'].toString().split(
-              '\n',
-            );
-            final translation = lyricParts.length > 1
-                ? lyricParts.sublist(1).join('\n').trim()
-                : '';
-            return LyricHighlightBuilder(
-              activeIndex: _activeLyricIndex,
-              index: index,
-              builder: (context, isCurrent) {
-                final primaryFontSize = isCurrent
-                    ? (isMini
-                          ? s(24)
-                          : (_isLargeMode
-                                ? lyricFontSize + _stageSize(6)
-                                : lyricFontSize))
-                    : (isMini
-                          ? s(20)
-                          : (_isLargeMode
-                                ? lyricFontSize - _stageSize(8)
-                                : lyricFontSize - s(10)));
-                // Animating font size re-lays out bilingual text on every frame.
-                // Keep the size change immediate; scrolling still animates.
-                return DefaultTextStyle(
-                  style: TextStyle(
-                    fontSize: primaryFontSize,
-                    fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                    color: isCurrent
-                        ? _lyricHighlightColor
-                        : (isMini ? Colors.black45 : Colors.black87),
-                    height: 1.5,
-                  ),
-                  child: Container(
-                    key: isMini ? _miniLyricKeys[index] : _lyricKeys[index],
-                    padding: EdgeInsets.symmetric(
-                      vertical: isMini ? s(9.0) : _stageSize(18.0),
-                    ),
-                    alignment: isMini ? Alignment.center : Alignment.centerLeft,
-                    child: Text.rich(
-                      TextSpan(
-                        text: lyricParts.first,
-                        children: translation.isEmpty
-                            ? const []
-                            : [
-                                TextSpan(
-                                  text: '\n$translation',
-                                  style: TextStyle(
-                                    fontSize: primaryFontSize * 0.72,
-                                    fontWeight: FontWeight.normal,
-                                    color: isCurrent
-                                        ? _lyricHighlightColor.withValues(
-                                            alpha: 0.78,
-                                          )
-                                        : Colors.black45,
-                                    height: 1.35,
-                                  ),
-                                ),
-                              ],
-                      ),
-                      textAlign: isMini ? TextAlign.center : TextAlign.left,
-                    ),
-                  ),
-                );
-              },
-            );
+      child: LayoutBuilder(
+        builder: (context, pane) => NotificationListener<ScrollNotification>(
+          onNotification: (notification) {
+            final isUserDrag =
+                notification is ScrollStartNotification &&
+                    notification.dragDetails != null ||
+                notification is ScrollUpdateNotification &&
+                    notification.dragDetails != null;
+            if (isUserDrag) _holdLyricAutoScroll();
+            return false;
           },
+          child: ListView.builder(
+            scrollCacheExtent: const ScrollCacheExtent.pixels(500),
+            controller: isMini
+                ? _miniLyricScrollController
+                : _lyricScrollController,
+            padding: EdgeInsets.only(
+              top:
+                  pane.maxHeight *
+                  (isMini
+                      ? .28
+                      : _isLargeMode
+                      ? .24
+                      : .37),
+              bottom: pane.maxHeight * .45,
+            ),
+            physics: const ClampingScrollPhysics(),
+            itemCount: parsedLyrics.length,
+            itemBuilder: (context, index) {
+              final lyricFontSize = min(
+                _isLargeMode ? _stageSize(_largeLyricFontSize) : _lyricFontSize,
+                min(
+                  max(s(20), pane.maxWidth * .115),
+                  max(s(17), pane.maxHeight * .26),
+                ),
+              );
+              final lyricParts = parsedLyrics[index]['text'].toString().split(
+                '\n',
+              );
+              final translation = lyricParts.length > 1
+                  ? lyricParts.sublist(1).join('\n').trim()
+                  : '';
+              return LyricHighlightBuilder(
+                activeIndex: _activeLyricIndex,
+                index: index,
+                builder: (context, isCurrent) {
+                  final primaryFontSize = isCurrent
+                      ? (isMini
+                            ? s(24)
+                            : (_isLargeMode
+                                  ? lyricFontSize + _stageSize(6)
+                                  : lyricFontSize))
+                      : (isMini
+                            ? s(20)
+                            : (_isLargeMode
+                                  ? lyricFontSize - _stageSize(8)
+                                  : lyricFontSize - s(10)));
+                  // Animating font size re-lays out bilingual text on every frame.
+                  // Keep the size change immediate; scrolling still animates.
+                  return DefaultTextStyle(
+                    style: TextStyle(
+                      fontSize: primaryFontSize,
+                      fontWeight: isCurrent
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                      color: isCurrent
+                          ? _lyricHighlightColor
+                          : (isMini ? Colors.black45 : Colors.black87),
+                      height: 1.5,
+                    ),
+                    child: Container(
+                      key: isMini ? _miniLyricKeys[index] : _lyricKeys[index],
+                      padding: EdgeInsets.symmetric(
+                        vertical: isMini ? s(9.0) : _stageSize(18.0),
+                      ),
+                      alignment: isMini
+                          ? Alignment.center
+                          : Alignment.centerLeft,
+                      child: Text.rich(
+                        TextSpan(
+                          text: lyricParts.first,
+                          children: translation.isEmpty
+                              ? const []
+                              : [
+                                  TextSpan(
+                                    text: '\n$translation',
+                                    style: TextStyle(
+                                      fontSize: primaryFontSize * 0.72,
+                                      fontWeight: FontWeight.normal,
+                                      color: isCurrent
+                                          ? _lyricHighlightColor.withValues(
+                                              alpha: 0.78,
+                                            )
+                                          : Colors.black45,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ],
+                        ),
+                        textAlign: isMini ? TextAlign.center : TextAlign.left,
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openPlayer() {
+    setState(() {
+      currentLeftScreen = 2;
+      _isLargeMode = false;
+    });
+    _resetScreenSaverTimer();
+    _recenterLyricsForLayout();
+  }
+
+  void _openDashboard() {
+    setState(() {
+      currentLeftScreen = 0;
+      _isLargeMode = false;
+    });
+    _screenSaverTimer?.cancel();
+  }
+
+  Widget _transportButton(
+    IconData icon,
+    String label,
+    VoidCallback action, {
+    required double size,
+    bool primary = false,
+  }) => IconButton(
+    tooltip: label,
+    padding: EdgeInsets.zero,
+    iconSize: size,
+    color: primary ? _lyricHighlightColor : Colors.black87,
+    icon: Icon(icon),
+    onPressed: action,
+  );
+
+  List<Widget> _transportButtons(double size, {bool includeMode = true}) => [
+    if (includeMode)
+      _transportButton(
+        _loopMode == 0
+            ? Icons.repeat
+            : _loopMode == 1
+            ? Icons.repeat_one
+            : Icons.shuffle,
+        '播放模式',
+        _toggleLoopMode,
+        size: size * .78,
+      ),
+    _transportButton(Icons.skip_previous, '上一首', () {
+      _resetScreenSaverTimer();
+      _playPrevSong();
+    }, size: size),
+    _transportButton(
+      isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+      isPlaying ? '暂停' : '播放',
+      () {
+        _resetScreenSaverTimer();
+        unawaited(_togglePlayPause());
+      },
+      size: size * 1.28,
+      primary: true,
+    ),
+    _transportButton(Icons.skip_next, '下一首', () {
+      _resetScreenSaverTimer();
+      _playNextSong(manual: true);
+    }, size: size),
+  ];
+
+  Widget _songHeading({
+    required double titleSize,
+    required double artistSize,
+  }) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        currentPlayingSong,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: titleSize,
+          fontWeight: FontWeight.bold,
+          color: Colors.black87,
+        ),
+      ),
+      Text(
+        currentArtist,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: artistSize, color: Colors.black54),
+      ),
+    ],
+  );
+
+  Widget _buildCompactPlaybackBar(double width) {
+    final iconSize = min(s(34) * _btnScale, width * .083);
+    return Material(
+      key: const ValueKey('compact-playback-bar'),
+      color: Colors.white.withValues(alpha: .65),
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: s(8)),
+        child: Row(
+          children: [
+            Expanded(
+              child: InkWell(
+                onTap: _openPlayer,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: s(8),
+                    vertical: s(8),
+                  ),
+                  child: _songHeading(titleSize: s(21), artistSize: s(15)),
+                ),
+              ),
+            ),
+            ..._transportButtons(iconSize, includeMode: false),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWideSidebar(
+    double width,
+    double height, {
+    bool fitHome = false,
+  }) {
+    final scale = fitHome ? min(s(1), min(width / 195, height / 350)) : s(1);
+    double size(double value) => value * scale;
+    final padding = min(size(20), width * .07);
+    final disc = min(size(155), min(width * .63, height * .27));
+    return Material(
+      key: const ValueKey('wide-playback-sidebar'),
+      color: Colors.white.withValues(alpha: .35),
+      child: SizedBox(
+        width: width,
+        child: Padding(
+          padding: EdgeInsets.all(padding),
+          child: Column(
+            children: [
+              InkWell(
+                onTap: _openDashboard,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.music_note,
+                      color: Colors.blueAccent,
+                      size: size(34),
+                    ),
+                    SizedBox(width: size(8)),
+                    Expanded(
+                      child: Text(
+                        'NAS 乐库',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: size(25),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final showDisc = box.maxHeight >= size(105);
+                    final showLyrics =
+                        currentPlayingSong != '等待播放' &&
+                        box.maxHeight >= size(185);
+                    return Column(
+                      mainAxisAlignment: showLyrics
+                          ? MainAxisAlignment.start
+                          : MainAxisAlignment.center,
+                      children: [
+                        if (showDisc) ...[
+                          _buildSongDisc(
+                            diameter: min(disc, box.maxHeight * .53),
+                            holeDiameter: disc * .24,
+                            rotateWithPlayback: true,
+                          ),
+                          SizedBox(height: size(8)),
+                        ],
+                        if (box.maxHeight >= size(44))
+                          InkWell(
+                            onTap: _openPlayer,
+                            child: _songHeading(
+                              titleSize: size(23),
+                              artistSize: size(16),
+                            ),
+                          ),
+                        if (showLyrics)
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: _openPlayer,
+                              child: _buildScrollingLyrics(
+                                context,
+                                isMini: true,
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              SizedBox(
+                height: fitHome ? size(48) : null,
+                child: Row(
+                  children: [
+                    for (final button in _transportButtons(
+                      min(size(34) * _btnScale, (width - padding * 2) * .17),
+                    ))
+                      Expanded(child: button),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -7188,13 +7440,9 @@ class _MainHomeScreenState extends State<MainHomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    double sidebarWidth = (currentLeftScreen == 2 && _isLargeMode) ? 0 : s(390);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncDiscAnimation();
-    });
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (bool didPop, dynamic result) {
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         try {
           platform.invokeMethod('sendToBackground');
@@ -7214,197 +7462,69 @@ class _MainHomeScreenState extends State<MainHomeScreen>
                     const Color(0xFFF2F6F9),
                     _bottomGlowColor,
                   ],
-                  stops: const [0.0, 0.4, 1.0],
+                  stops: const [0, .4, 1],
                 ),
               ),
             ),
-            Row(
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 350),
-                  curve: Curves.easeInOut,
-                  width: sidebarWidth,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.35),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: SizedBox(
-                    width: s(390),
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(
-                        vertical: s(36),
-                        horizontal: s(24),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                currentLeftScreen = 0;
-                                _isLargeMode = false;
-                              });
-                              _screenSaverTimer?.cancel();
-                            },
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.music_note,
-                                  color: Colors.blueAccent,
-                                  size: s(54),
-                                ),
-                                SizedBox(width: s(12)),
-                                Text(
-                                  'NAS 乐库',
-                                  style: TextStyle(
-                                    color: Colors.black87,
-                                    fontSize: s(30),
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Expanded(
-                            child: AnimatedAlign(
-                              duration: const Duration(milliseconds: 600),
-                              curve: Curves.easeInOut,
-                              alignment:
-                                  (currentPlayingSong == "等待播放" && !isPlaying)
-                                  ? Alignment.center
-                                  : Alignment.topCenter,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(height: s(15)),
-                                  _buildSongDisc(
-                                    diameter: s(160),
-                                    holeDiameter: s(40),
-                                    rotateWithPlayback: true,
-                                  ),
-                                  SizedBox(height: s(15)),
-                                  Text(
-                                    currentPlayingSong,
-                                    style: TextStyle(
-                                      fontSize: s(30),
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.black87,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                  ),
-                                  Text(
-                                    currentArtist,
-                                    style: TextStyle(
-                                      fontSize: s(20),
-                                      color: Colors.black54,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  if (currentPlayingSong != "等待播放")
-                                    Expanded(
-                                      child: GestureDetector(
-                                        onTap: () {
-                                          setState(() {
-                                            currentLeftScreen = 2;
-                                            _isLargeMode = false;
-                                            _resetScreenSaverTimer();
-                                          });
-                                          _syncPlaybackPosition(
-                                            forceLyricRecenter: true,
-                                          );
-                                        },
-                                        child: Container(
-                                          margin: EdgeInsets.symmetric(
-                                            vertical: s(12),
-                                          ),
-                                          child: _buildScrollingLyrics(
-                                            context,
-                                            isMini: true,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          Container(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: s(6),
-                              vertical: s(12),
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.5),
-                              borderRadius: BorderRadius.circular(s(45)),
-                            ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                IconButton(
-                                  icon: Icon(
-                                    _loopMode == 0
-                                        ? Icons.repeat
-                                        : (_loopMode == 1
-                                              ? Icons.repeat_one
-                                              : Icons.shuffle),
-                                  ),
-                                  iconSize: s(33) * _btnScale,
-                                  color: Colors.black87,
-                                  onPressed: _toggleLoopMode,
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.skip_previous),
-                                  iconSize: s(45) * _btnScale,
-                                  color: Colors.black87,
-                                  onPressed: () {
-                                    _resetScreenSaverTimer();
-                                    _playPrevSong();
-                                  },
-                                ),
-                                IconButton(
-                                  icon: Icon(
-                                    isPlaying
-                                        ? Icons.pause_circle_filled
-                                        : Icons.play_circle_filled,
-                                  ),
-                                  iconSize: s(64) * _btnScale,
-                                  color: _lyricHighlightColor,
-                                  onPressed: () {
-                                    _resetScreenSaverTimer();
-                                    _togglePlayPause();
-                                  },
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.skip_next),
-                                  iconSize: s(45) * _btnScale,
-                                  color: Colors.black87,
-                                  onPressed: () {
-                                    _resetScreenSaverTimer();
-                                    _playNextSong(manual: true);
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                if (sidebarWidth > 0)
-                  Container(width: 1, color: Colors.black12),
-                Expanded(
-                  child: switch (currentLeftScreen) {
-                    0 => _buildNasDashboard(),
+            SafeArea(
+              child: LayoutBuilder(
+                builder: (context, bounds) {
+                  // Keep the sidebar decision stable when the on-screen keyboard
+                  // changes the usable height of the song list.
+                  final keyboard = MediaQuery.viewInsetsOf(this.context).bottom;
+                  final size = Size(
+                    bounds.maxWidth,
+                    bounds.maxHeight + keyboard,
+                  );
+                  if (_viewport.size != size) {
+                    _viewport = CarViewport(size);
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted && _viewport.size == size)
+                        _recenterLyricsForLayout();
+                    });
+                  }
+                  final large = currentLeftScreen == 2 && _isLargeMode;
+                  final landscapeHome =
+                      currentLeftScreen == 0 &&
+                      MediaQuery.orientationOf(context) ==
+                          Orientation.landscape;
+                  final showSide =
+                      landscapeHome ||
+                      _viewport.wide && !large && bounds.maxHeight >= s(125);
+                  final page = switch (currentLeftScreen) {
+                    0 => _buildNasDashboard(landscape: landscapeHome),
                     1 => _buildSongListView(),
                     2 => _buildQQMusicUnifiedStage(),
                     _ => _buildSettingsScreen(),
-                  },
-                ),
-              ],
+                  };
+                  return Column(
+                    children: [
+                      Expanded(
+                        child: Row(
+                          children: [
+                            if (showSide)
+                              _buildWideSidebar(
+                                _viewport.sidebarWidth,
+                                bounds.maxHeight,
+                                fitHome: landscapeHome,
+                              ),
+                            Expanded(
+                              key: const ValueKey('car-main-pane'),
+                              child: page,
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (!showSide &&
+                          !_viewport.wide &&
+                          currentLeftScreen != 2 &&
+                          keyboard == 0 &&
+                          bounds.maxHeight >= s(135))
+                        _buildCompactPlaybackBar(bounds.maxWidth),
+                    ],
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -7412,71 +7532,144 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     );
   }
 
-  Widget _buildNasDashboard() {
-    return Padding(
-      padding: EdgeInsets.all(s(36.0)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '我的资源',
-            style: TextStyle(
-              fontSize: s(36),
-              fontWeight: FontWeight.bold,
-              color: Colors.black87,
-            ),
-          ),
-          SizedBox(height: s(36)),
-          Expanded(
-            child: GridView.builder(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                childAspectRatio: 1.4,
-                crossAxisSpacing: s(24),
-                mainAxisSpacing: s(24),
+  Widget _buildNasDashboard({required bool landscape}) => LayoutBuilder(
+    builder: (context, bounds) {
+      final padding = landscape ? min(s(24), bounds.maxHeight * .07) : s(36);
+      final titleSize = landscape
+          ? min(s(36), min(bounds.maxHeight * .12, bounds.maxWidth * .095))
+          : s(36);
+      final titleGap = landscape ? min(s(16), bounds.maxHeight * .05) : s(36);
+      return Padding(
+        padding: EdgeInsets.all(padding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '我的资源',
+              style: TextStyle(
+                fontSize: titleSize,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
               ),
-              itemCount: webdavAccounts.length + 1,
-              itemBuilder: (context, index) {
-                if (index == webdavAccounts.length)
-                  return _buildDashboardCard(
-                    title: '系统设置 ⚙️',
-                    subtitle: '添加云盘与偏好设置',
-                    onTap: () {
-                      setState(() {
-                        currentLeftScreen = 3;
-                      });
+            ),
+            SizedBox(height: titleGap),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, grid) {
+                  final count = webdavAccounts.length + 1;
+                  final columns = max(2, (grid.maxWidth / s(240)).floor());
+                  final rows = (count / columns).ceil();
+                  final gap = min(s(16), grid.maxHeight * .06);
+                  final maxTileHeight = min(s(150), grid.maxHeight);
+                  // Keep cards usable when the number of libraries requires scrolling.
+                  final tileHeight =
+                      ((grid.maxHeight - gap * (rows - 1)) / rows)
+                          .clamp(
+                            min(s(72), (grid.maxHeight - gap * 2) / 3),
+                            maxTileHeight,
+                          )
+                          .toDouble();
+                  final tileWidth =
+                      (grid.maxWidth - gap * (columns - 1)) / columns;
+                  final cardScale = landscape
+                      ? min(tileHeight / s(150), tileWidth / s(230))
+                      : 1.0;
+                  return GridView.builder(
+                    gridDelegate: landscape
+                        ? SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: columns,
+                            mainAxisExtent: tileHeight,
+                            crossAxisSpacing: gap,
+                            mainAxisSpacing: gap,
+                          )
+                        : SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: s(390),
+                            mainAxisExtent: s(150),
+                            crossAxisSpacing: s(24),
+                            mainAxisSpacing: s(24),
+                          ),
+                    itemCount: count,
+                    itemBuilder: (context, index) {
+                      if (index == webdavAccounts.length)
+                        return _buildDashboardCard(
+                          title: '系统设置 ⚙️',
+                          subtitle: '添加云盘与偏好设置',
+                          cardScale: cardScale,
+                          onTap: () {
+                            setState(() {
+                              currentLeftScreen = 3;
+                            });
+                          },
+                        );
+                      var acc = webdavAccounts[index];
+                      return _buildDashboardCard(
+                        title: '${acc['name']} ☁️',
+                        subtitle:
+                            activeAccount == acc && realNasSongs.isNotEmpty
+                            ? '已挂载 / 共 ${realNasSongs.length} 首歌'
+                            : '点击连接挂载',
+                        cardScale: cardScale,
+                        onTap: () async {
+                          final switchingAccount = !_sameAccount(
+                            activeAccount,
+                            acc,
+                          );
+                          setState(() {
+                            activeAccount = acc;
+                            currentLeftScreen = 1;
+                            if (switchingAccount) {
+                              realNasSongs = [];
+                              _slidingSongName = null;
+                              _showingCachedSongsOnly = false;
+                            }
+                          });
+                          await _restoreRememberedPlaylist(acc);
+                          if (mounted && _sameAccount(activeAccount, acc)) {
+                            await fetchSongsFromWebDav();
+                          }
+                        },
+                      );
                     },
                   );
-                var acc = webdavAccounts[index];
-                return _buildDashboardCard(
-                  title: '${acc['name']} ☁️',
-                  subtitle: activeAccount == acc && realNasSongs.isNotEmpty
-                      ? '已挂载 / 共 ${realNasSongs.length} 首歌'
-                      : '点击连接挂载',
-                  onTap: () async {
-                    final switchingAccount = !_sameAccount(activeAccount, acc);
-                    setState(() {
-                      activeAccount = acc;
-                      currentLeftScreen = 1;
-                      if (switchingAccount) {
-                        realNasSongs = [];
-                        _slidingSongName = null;
-                        _showingCachedSongsOnly = false;
-                      }
-                    });
-                    await _restoreRememberedPlaylist(acc);
-                    if (mounted && _sameAccount(activeAccount, acc)) {
-                      await fetchSongsFromWebDav();
-                    }
-                  },
-                );
-              },
+                },
+              ),
             ),
-          ),
+          ],
+        ),
+      );
+    },
+  );
+
+  Widget _settingsSliderRow({
+    required Widget label,
+    required Slider slider,
+    required Widget value,
+  }) => LayoutBuilder(
+    builder: (context, bounds) {
+      if (bounds.maxWidth < s(445)) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(child: label),
+                SizedBox(width: s(8)),
+                value,
+              ],
+            ),
+            slider,
+          ],
+        );
+      }
+      return Row(
+        children: [
+          label,
+          Expanded(child: slider),
+          value,
         ],
-      ),
-    );
-  }
+      );
+    },
+  );
 
   Widget _buildSettingsScreen() {
     return Scaffold(
@@ -7502,12 +7695,15 @@ class _MainHomeScreenState extends State<MainHomeScreen>
         ),
       ),
       body: SingleChildScrollView(
-        padding: EdgeInsets.all(s(48)),
+        padding: EdgeInsets.all(s(_viewport.wide ? 36 : 24)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: s(12),
+              runSpacing: s(8),
               children: [
                 Text(
                   "已配置的 WebDAV 节点",
@@ -7602,70 +7798,62 @@ class _MainHomeScreenState extends State<MainHomeScreen>
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
-              child: Row(
-                children: [
-                  Text(
-                    "全局 UI 缩放: ",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: s(24),
-                    ),
+              child: _settingsSliderRow(
+                label: Text(
+                  "全局 UI 缩放: ",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: s(24),
                   ),
-                  Expanded(
-                    child: Slider(
-                      value: _uiScale,
-                      min: 0.8,
-                      max: 2.5,
-                      divisions: 17,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (val) {
-                        setState(() {
-                          _uiScale = val;
-                        });
-                        _prefs.setDouble('uiScale', val);
-                        unawaited(_configureDesktopLyrics());
-                        _updateCachedFilesList();
-                      },
-                    ),
-                  ),
-                  Text(
-                    "${_uiScale.toStringAsFixed(1)}x",
-                    style: TextStyle(fontSize: s(20)),
-                  ),
-                ],
+                ),
+                slider: Slider(
+                  value: _uiScale,
+                  min: 0.8,
+                  max: 2.5,
+                  divisions: 17,
+                  activeColor: Colors.blueAccent,
+                  onChanged: (val) {
+                    setState(() {
+                      _uiScale = val;
+                    });
+                    _prefs.setDouble('uiScale', val);
+                    unawaited(_configureDesktopLyrics());
+                    _updateCachedFilesList();
+                  },
+                ),
+                value: Text(
+                  "${_uiScale.toStringAsFixed(1)}x",
+                  style: TextStyle(fontSize: s(20)),
+                ),
               ),
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
-              child: Row(
-                children: [
-                  Text(
-                    "全局按钮缩放: ",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: s(24),
-                    ),
+              child: _settingsSliderRow(
+                label: Text(
+                  "全局按钮缩放: ",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: s(24),
                   ),
-                  Expanded(
-                    child: Slider(
-                      value: _btnScale,
-                      min: 0.5,
-                      max: 3.0,
-                      divisions: 25,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (val) {
-                        setState(() {
-                          _btnScale = val;
-                        });
-                        _prefs.setDouble('btnScale', val);
-                      },
-                    ),
-                  ),
-                  Text(
-                    "${_btnScale.toStringAsFixed(1)}x",
-                    style: TextStyle(fontSize: s(20)),
-                  ),
-                ],
+                ),
+                slider: Slider(
+                  value: _btnScale,
+                  min: 0.5,
+                  max: 3.0,
+                  divisions: 25,
+                  activeColor: Colors.blueAccent,
+                  onChanged: (val) {
+                    setState(() {
+                      _btnScale = val;
+                    });
+                    _prefs.setDouble('btnScale', val);
+                  },
+                ),
+                value: Text(
+                  "${_btnScale.toStringAsFixed(1)}x",
+                  style: TextStyle(fontSize: s(20)),
+                ),
               ),
             ),
             SwitchListTile(
@@ -7692,36 +7880,31 @@ class _MainHomeScreenState extends State<MainHomeScreen>
             if (_desktopLyricsEnabled) ...[
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: s(16)),
-                child: Row(
-                  children: [
-                    Text('桌面歌词宽度', style: TextStyle(fontSize: s(20))),
-                    Expanded(
-                      child: Slider(
-                        value: _desktopLyricWidth,
-                        min: .3,
-                        max: 1,
-                        divisions: 70,
-                        label: '${(_desktopLyricWidth * 100).round()}%',
-                        onChanged: (value) {
-                          setState(() => _desktopLyricWidth = value);
-                          // Resize the native window without resending the whole LRC.
-                          unawaited(
-                            _configureDesktopLyrics(
-                              syncLyrics: false,
-                              setWidth: true,
-                            ),
-                          );
-                        },
-                        onChangeEnd: (value) => unawaited(
-                          _prefs.setDouble('desktopLyricWidth', value),
+                child: _settingsSliderRow(
+                  label: Text('桌面歌词宽度', style: TextStyle(fontSize: s(20))),
+                  slider: Slider(
+                    value: _desktopLyricWidth,
+                    min: .3,
+                    max: 1,
+                    divisions: 70,
+                    label: '${(_desktopLyricWidth * 100).round()}%',
+                    onChanged: (value) {
+                      setState(() => _desktopLyricWidth = value);
+                      // Resize the native window without resending the whole LRC.
+                      unawaited(
+                        _configureDesktopLyrics(
+                          syncLyrics: false,
+                          setWidth: true,
                         ),
-                      ),
-                    ),
-                    Text(
-                      '${(_desktopLyricWidth * 100).round()}%',
-                      style: TextStyle(fontSize: s(20)),
-                    ),
-                  ],
+                      );
+                    },
+                    onChangeEnd: (value) =>
+                        unawaited(_prefs.setDouble('desktopLyricWidth', value)),
+                  ),
+                  value: Text(
+                    '${(_desktopLyricWidth * 100).round()}%',
+                    style: TextStyle(fontSize: s(20)),
+                  ),
                 ),
               ),
               Padding(
@@ -7774,53 +7957,45 @@ class _MainHomeScreenState extends State<MainHomeScreen>
               ),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: s(16)),
-                child: Row(
-                  children: [
-                    Text('桌面歌词字号', style: TextStyle(fontSize: s(20))),
-                    Expanded(
-                      child: Slider(
-                        value: _desktopLyricFontSize,
-                        min: 18,
-                        max: 48,
-                        divisions: 30,
-                        label: _desktopLyricFontSize.round().toString(),
-                        onChanged: (value) {
-                          setState(() => _desktopLyricFontSize = value);
-                          _prefs.setDouble('desktopLyricFontSize', value);
-                          unawaited(_configureDesktopLyrics());
-                        },
-                      ),
-                    ),
-                    Text(
-                      '${_desktopLyricFontSize.round()}',
-                      style: TextStyle(fontSize: s(20)),
-                    ),
-                  ],
+                child: _settingsSliderRow(
+                  label: Text('桌面歌词字号', style: TextStyle(fontSize: s(20))),
+                  slider: Slider(
+                    value: _desktopLyricFontSize,
+                    min: 18,
+                    max: 48,
+                    divisions: 30,
+                    label: _desktopLyricFontSize.round().toString(),
+                    onChanged: (value) {
+                      setState(() => _desktopLyricFontSize = value);
+                      _prefs.setDouble('desktopLyricFontSize', value);
+                      unawaited(_configureDesktopLyrics());
+                    },
+                  ),
+                  value: Text(
+                    '${_desktopLyricFontSize.round()}',
+                    style: TextStyle(fontSize: s(20)),
+                  ),
                 ),
               ),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: s(16)),
-                child: Row(
-                  children: [
-                    Text('桌面歌词底色浓度', style: TextStyle(fontSize: s(20))),
-                    Expanded(
-                      child: Slider(
-                        value: _desktopLyricOpacity,
-                        min: 0,
-                        max: .85,
-                        divisions: 17,
-                        onChanged: (value) {
-                          setState(() => _desktopLyricOpacity = value);
-                          _prefs.setDouble('desktopLyricOpacity', value);
-                          unawaited(_configureDesktopLyrics());
-                        },
-                      ),
-                    ),
-                    Text(
-                      '${(_desktopLyricOpacity * 100).round()}%',
-                      style: TextStyle(fontSize: s(20)),
-                    ),
-                  ],
+                child: _settingsSliderRow(
+                  label: Text('桌面歌词底色浓度', style: TextStyle(fontSize: s(20))),
+                  slider: Slider(
+                    value: _desktopLyricOpacity,
+                    min: 0,
+                    max: .85,
+                    divisions: 17,
+                    onChanged: (value) {
+                      setState(() => _desktopLyricOpacity = value);
+                      _prefs.setDouble('desktopLyricOpacity', value);
+                      unawaited(_configureDesktopLyrics());
+                    },
+                  ),
+                  value: Text(
+                    '${(_desktopLyricOpacity * 100).round()}%',
+                    style: TextStyle(fontSize: s(20)),
+                  ),
                 ),
               ),
               SwitchListTile(
@@ -7944,41 +8119,37 @@ class _MainHomeScreenState extends State<MainHomeScreen>
                   horizontal: s(16),
                   vertical: s(4),
                 ),
-                child: Row(
-                  children: [
-                    Text(
-                      "自启延迟时间: ",
+                child: _settingsSliderRow(
+                  label: Text(
+                    "自启延迟时间: ",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: s(24),
+                      color: Colors.black54,
+                    ),
+                  ),
+                  slider: Slider(
+                    value: _bootDelay.toDouble(),
+                    min: 0.0,
+                    max: 60.0,
+                    divisions: 60,
+                    activeColor: Colors.blueAccent.withOpacity(0.7),
+                    onChanged: (val) {
+                      setState(() => _bootDelay = val.toInt());
+                      _prefs.setInt('bootDelay', val.toInt());
+                    },
+                  ),
+                  value: SizedBox(
+                    width: s(80),
+                    child: Text(
+                      "$_bootDelay 秒",
                       style: TextStyle(
+                        fontSize: s(22),
                         fontWeight: FontWeight.bold,
-                        fontSize: s(24),
-                        color: Colors.black54,
                       ),
+                      textAlign: TextAlign.right,
                     ),
-                    Expanded(
-                      child: Slider(
-                        value: _bootDelay.toDouble(),
-                        min: 0.0,
-                        max: 60.0,
-                        divisions: 60,
-                        activeColor: Colors.blueAccent.withOpacity(0.7),
-                        onChanged: (val) {
-                          setState(() => _bootDelay = val.toInt());
-                          _prefs.setInt('bootDelay', val.toInt());
-                        },
-                      ),
-                    ),
-                    SizedBox(
-                      width: s(80),
-                      child: Text(
-                        "$_bootDelay 秒",
-                        style: TextStyle(
-                          fontSize: s(22),
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.right,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             SizedBox(height: s(48)),
@@ -8052,141 +8223,123 @@ class _MainHomeScreenState extends State<MainHomeScreen>
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
-              child: Row(
-                children: [
-                  Text(
-                    '\u542f\u52a8\u5ef6\u8fdf: ',
+              child: _settingsSliderRow(
+                label: Text(
+                  '\u542f\u52a8\u5ef6\u8fdf: ',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: s(24),
+                  ),
+                ),
+                slider: Slider(
+                  value: _bootOtherAppDelay.toDouble(),
+                  min: 1.0,
+                  max: 30.0,
+                  divisions: 29,
+                  activeColor: Colors.blueAccent,
+                  onChanged: (val) {
+                    setState(() => _bootOtherAppDelay = val.toInt());
+                    _prefs.setInt('bootOtherAppDelay', val.toInt());
+                  },
+                ),
+                value: SizedBox(
+                  width: s(80),
+                  child: Text(
+                    "${_bootOtherAppDelay}s",
                     style: TextStyle(
+                      fontSize: s(22),
                       fontWeight: FontWeight.bold,
-                      fontSize: s(24),
                     ),
+                    textAlign: TextAlign.right,
                   ),
-                  Expanded(
-                    child: Slider(
-                      value: _bootOtherAppDelay.toDouble(),
-                      min: 1.0,
-                      max: 30.0,
-                      divisions: 29,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (val) {
-                        setState(() => _bootOtherAppDelay = val.toInt());
-                        _prefs.setInt('bootOtherAppDelay', val.toInt());
-                      },
-                    ),
-                  ),
-                  SizedBox(
-                    width: s(80),
-                    child: Text(
-                      "${_bootOtherAppDelay}s",
-                      style: TextStyle(
-                        fontSize: s(22),
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.right,
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
 
             Padding(
               padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
-              child: Row(
-                children: [
-                  Text(
-                    "自动进入大屏: ",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: s(24),
-                    ),
+              child: _settingsSliderRow(
+                label: Text(
+                  "自动进入大屏: ",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: s(24),
                   ),
-                  Expanded(
-                    child: Slider(
-                      value: _screenSaverTimeout.toDouble(),
-                      min: 0.0,
-                      max: 60.0,
-                      divisions: 60,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (val) {
-                        setState(() {
-                          _screenSaverTimeout = val.toInt();
-                        });
-                        _prefs.setInt('screenSaverTimeout', val.toInt());
-                        _resetScreenSaverTimer();
-                      },
-                    ),
-                  ),
-                  Text(
-                    _screenSaverTimeout == 0
-                        ? "不自动切换"
-                        : "$_screenSaverTimeout s",
-                    style: TextStyle(fontSize: s(20)),
-                  ),
-                ],
+                ),
+                slider: Slider(
+                  value: _screenSaverTimeout.toDouble(),
+                  min: 0.0,
+                  max: 60.0,
+                  divisions: 60,
+                  activeColor: Colors.blueAccent,
+                  onChanged: (val) {
+                    setState(() {
+                      _screenSaverTimeout = val.toInt();
+                    });
+                    _prefs.setInt('screenSaverTimeout', val.toInt());
+                    _resetScreenSaverTimer();
+                  },
+                ),
+                value: Text(
+                  _screenSaverTimeout == 0 ? "不自动切换" : "$_screenSaverTimeout s",
+                  style: TextStyle(fontSize: s(20)),
+                ),
               ),
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
-              child: Row(
-                children: [
-                  Text(
-                    "普通播放页歌词字号: ",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: s(24),
-                    ),
+              child: _settingsSliderRow(
+                label: Text(
+                  "普通播放页歌词字号: ",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: s(24),
                   ),
-                  Expanded(
-                    child: Slider(
-                      value: _lyricFontSize,
-                      min: 30.0,
-                      max: 100.0,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (val) {
-                        setState(() => _lyricFontSize = val);
-                        _prefs.setDouble('lyricFontSize', val);
-                      },
-                    ),
-                  ),
-                  Text(
-                    _lyricFontSize.toInt().toString(),
-                    style: TextStyle(fontSize: s(20)),
-                  ),
-                ],
+                ),
+                slider: Slider(
+                  value: _lyricFontSize,
+                  min: 30.0,
+                  max: 100.0,
+                  activeColor: Colors.blueAccent,
+                  onChanged: (val) {
+                    setState(() => _lyricFontSize = val);
+                    _prefs.setDouble('lyricFontSize', val);
+                  },
+                ),
+                value: Text(
+                  _lyricFontSize.toInt().toString(),
+                  style: TextStyle(fontSize: s(20)),
+                ),
               ),
             ),
             Padding(
               padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
-              child: Row(
-                children: [
-                  Text(
-                    "最大离线缓存 (GB): ",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: s(24),
-                    ),
+              child: _settingsSliderRow(
+                label: Text(
+                  "最大离线缓存 (GB): ",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: s(24),
                   ),
-                  Expanded(
-                    child: Slider(
-                      value: _maxCacheGB,
-                      min: 0.5,
-                      max: 20.0,
-                      divisions: 39,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (val) {
-                        setState(() => _maxCacheGB = val);
-                      },
-                      onChangeEnd: (val) {
-                        _prefs.setDouble('maxCacheGB', val);
-                        unawaited(_enforceCacheLimit());
-                      },
-                    ),
-                  ),
-                  Text(
-                    _maxCacheGB.toStringAsFixed(1),
-                    style: TextStyle(fontSize: s(20)),
-                  ),
-                ],
+                ),
+                slider: Slider(
+                  value: _maxCacheGB,
+                  min: 0.5,
+                  max: 20.0,
+                  divisions: 39,
+                  activeColor: Colors.blueAccent,
+                  onChanged: (val) {
+                    setState(() => _maxCacheGB = val);
+                  },
+                  onChangeEnd: (val) {
+                    _prefs.setDouble('maxCacheGB', val);
+                    unawaited(_enforceCacheLimit());
+                  },
+                ),
+                value: Text(
+                  _maxCacheGB.toStringAsFixed(1),
+                  style: TextStyle(fontSize: s(20)),
+                ),
               ),
             ),
 
@@ -8199,8 +8352,11 @@ class _MainHomeScreenState extends State<MainHomeScreen>
               ),
             ),
             SizedBox(height: s(48)),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: s(12),
+              runSpacing: s(8),
               children: [
                 Text(
                   "方向盘按键调试日志",
@@ -8446,6 +8602,7 @@ class _MainHomeScreenState extends State<MainHomeScreen>
 
   Widget _buildSongListView() {
     final visibleSongs = _visibleSongs;
+    final typing = MediaQuery.viewInsetsOf(context).bottom > 0;
     final lastSync = _lastLibrarySync;
     final syncLabel = lastSync == null
         ? '尚未同步'
@@ -8470,6 +8627,8 @@ class _MainHomeScreenState extends State<MainHomeScreen>
           activeAccount != null
               ? '${activeAccount!['name']}${_showingCachedSongsOnly ? '（离线缓存）' : ''}'
               : '群晖歌单',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
             color: Colors.black87,
             fontSize: s(28),
@@ -8498,7 +8657,7 @@ class _MainHomeScreenState extends State<MainHomeScreen>
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(s(110)),
+          preferredSize: Size.fromHeight(s(typing ? 60 : 110)),
           child: Padding(
             padding: EdgeInsets.symmetric(horizontal: s(16)),
             child: Column(
@@ -8529,46 +8688,48 @@ class _MainHomeScreenState extends State<MainHomeScreen>
                     );
                   },
                 ),
-                Row(
-                  children: [
-                    FilterChip(
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      labelPadding: EdgeInsets.symmetric(horizontal: s(4)),
-                      padding: EdgeInsets.all(s(6)),
-                      label: Text('仅已缓存', style: TextStyle(fontSize: s(18))),
-                      selected: _onlyCached,
-                      onSelected: (value) =>
-                          setState(() => _onlyCached = value),
-                    ),
-                    IconButton(
-                      constraints: BoxConstraints(
-                        minWidth: s(42),
-                        minHeight: s(42),
+                if (!typing)
+                  Row(
+                    children: [
+                      FilterChip(
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: EdgeInsets.symmetric(horizontal: s(4)),
+                        padding: EdgeInsets.all(s(6)),
+                        label: Text('仅已缓存', style: TextStyle(fontSize: s(18))),
+                        selected: _onlyCached,
+                        onSelected: (value) =>
+                            setState(() => _onlyCached = value),
                       ),
-                      padding: EdgeInsets.all(s(8)),
-                      tooltip: _reverseSongSort ? '按名称升序' : '按名称降序',
-                      icon: Icon(
-                        _reverseSongSort
-                            ? Icons.arrow_upward
-                            : Icons.arrow_downward,
-                        size: s(24),
-                      ),
-                      onPressed: () =>
-                          setState(() => _reverseSongSort = !_reverseSongSort),
-                    ),
-                    Expanded(
-                      child: Text(
-                        '${visibleSongs.length} 首 · $syncLabel',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: s(16),
-                          color: Colors.black54,
+                      IconButton(
+                        constraints: BoxConstraints(
+                          minWidth: s(42),
+                          minHeight: s(42),
+                        ),
+                        padding: EdgeInsets.all(s(8)),
+                        tooltip: _reverseSongSort ? '按名称升序' : '按名称降序',
+                        icon: Icon(
+                          _reverseSongSort
+                              ? Icons.arrow_upward
+                              : Icons.arrow_downward,
+                          size: s(24),
+                        ),
+                        onPressed: () => setState(
+                          () => _reverseSongSort = !_reverseSongSort,
                         ),
                       ),
-                    ),
-                  ],
-                ),
+                      Expanded(
+                        child: Text(
+                          '${visibleSongs.length} 首 · $syncLabel',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: s(16),
+                            color: Colors.black54,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
               ],
             ),
           ),
@@ -8608,12 +8769,12 @@ class _MainHomeScreenState extends State<MainHomeScreen>
                       ? activeAccount!['name']
                       : '未知云盘';
 
-                  Widget songItem = Container(
-                    height: s(114.0),
-                    color: isCurrent
-                        ? _lyricHighlightColor.withOpacity(0.12)
-                        : Colors.transparent,
-                    child: Center(
+                  Widget songItem = ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: s(96)),
+                    child: Material(
+                      color: isCurrent
+                          ? _lyricHighlightColor.withValues(alpha: .12)
+                          : Colors.transparent,
                       child: ListTile(
                         leading: SizedBox(
                           width: s(48),
@@ -8634,6 +8795,8 @@ class _MainHomeScreenState extends State<MainHomeScreen>
                         ),
                         title: Text(
                           songName.replaceAll(RegExp(r'\.[^.]+$'), ''),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: s(26),
                             fontWeight: isCurrent
@@ -8650,6 +8813,8 @@ class _MainHomeScreenState extends State<MainHomeScreen>
                               : (isCached
                                     ? '来自 $nasName / 已缓存'
                                     : '来自 $nasName'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: s(18),
                             color: isCurrent
@@ -8922,380 +9087,330 @@ class _MainHomeScreenState extends State<MainHomeScreen>
     );
   }
 
-  Widget _buildQQMusicUnifiedStage() {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final horizontalPadding = _isLargeMode
-              ? _stageSize(75).clamp(0.0, constraints.maxWidth * 0.07)
-              : _stageSize(75);
-          final discSize =
-              (_isLargeMode
-                      ? _stageSize(240).clamp(
-                          0.0,
-                          min(
-                            constraints.maxWidth * 0.23,
-                            constraints.maxHeight * 0.38,
-                          ),
-                        )
-                      : _stageSize(220))
-                  .toDouble();
-          final layoutDuration = _showLargeDisplayControls
-              ? Duration.zero
-              : const Duration(milliseconds: 450);
-          final titlePanelWidth = (constraints.maxWidth - horizontalPadding * 2)
-              .clamp(0.0, _isLargeMode ? constraints.maxWidth : _stageSize(750))
-              .toDouble();
-          final clockStyle = TextStyle(
-            fontSize: _stageSize(_largeClockFontSize),
-            height: 1,
-            fontWeight: FontWeight.w200,
-            color: Colors.black87,
-            fontFamily: 'monospace',
-          );
-          final songHeading = Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                currentPlayingSong,
-                style: TextStyle(
-                  fontSize: _isLargeMode ? _stageSize(40) : _stageSize(34),
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(
-                currentArtist,
-                style: TextStyle(
-                  fontSize: _stageSize(18),
-                  color: Colors.black54,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          );
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              setState(() {
-                _isLargeMode = !_isLargeMode;
-                if (!_isLargeMode) _showLargeDisplayControls = false;
-                _resetScreenSaverTimer();
-              });
-              _recenterLyricsForLayout();
-            },
-            // The foreground lyric ListView covers the disc's hit-test area.
-            // Keep its long-press action on the stage; vertical drags still scroll.
-            onLongPressStart: _isLargeMode
-                ? (details) {
-                    final discBounds = Rect.fromLTWH(
-                      constraints.maxWidth - horizontalPadding - discSize,
-                      constraints.maxHeight - _stageSize(75) - discSize,
-                      discSize,
-                      discSize,
-                    );
-                    if (discBounds.contains(details.localPosition)) {
-                      _showCoverSelectionDialog();
-                    }
-                  }
-                : null,
-            child: Stack(
+  Future<void> _openPlayingSongList() async {
+    if (playingAccount != null &&
+        !_sameAccount(activeAccount, playingAccount)) {
+      setState(() => activeAccount = playingAccount);
+      await _restoreRememberedPlaylist(playingAccount!);
+      if (!mounted) return;
+      unawaited(fetchSongsFromWebDav(silent: true));
+    }
+    if (!mounted) return;
+    setState(() {
+      currentLeftScreen = activeAccount == null ? 0 : 1;
+      _isLargeMode = false;
+      _showLargeDisplayControls = false;
+    });
+    _screenSaverTimer?.cancel();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollToCurrentSong();
+    });
+  }
+
+  void _toggleLargeStage() {
+    setState(() {
+      _isLargeMode = !_isLargeMode;
+      if (!_isLargeMode) _showLargeDisplayControls = false;
+    });
+    _resetScreenSaverTimer();
+    _recenterLyricsForLayout();
+  }
+
+  Widget _buildStageTransport(BoxConstraints bounds) {
+    final compact = bounds.maxWidth < s(530) || bounds.maxHeight < s(280);
+    final slot = bounds.maxWidth / (compact ? 5 : 8);
+    final buttonHeight = min(s(66), bounds.maxHeight * .16);
+    final iconSize = min(
+      s(43) * _btnScale,
+      min(slot * .56, buttonHeight * .69),
+    );
+    final tools = <({IconData icon, String label, VoidCallback action})>[
+      (
+        icon: _isRefreshingLyrics ? Icons.hourglass_top : Icons.lyrics_outlined,
+        label: '歌词选择',
+        action: _showLyricSelectionDialog,
+      ),
+      (
+        icon: Icons.image_search,
+        label: '选择封面',
+        action: _showCoverSelectionDialog,
+      ),
+      (
+        icon: Icons.timer_outlined,
+        label: '歌词时间微调',
+        action: _showLyricOffsetDialog,
+      ),
+      (
+        icon: Icons.queue_music,
+        label: '播放列表',
+        action: () => unawaited(_openPlayingSongList()),
+      ),
+    ];
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          height: min(s(46), bounds.maxHeight * .12),
+          child: ValueListenableBuilder<int>(
+            valueListenable: _progressTick,
+            builder: (context, _, _) => Row(
               children: [
-                Positioned(
-                  left: _stageSize(30),
-                  top: _stageSize(30),
-                  child: IconButton(
-                    icon: Icon(
-                      Icons.arrow_back_ios,
-                      color: Colors.black87,
-                      size: _stageSize(36),
-                    ),
-                    onPressed: () {
-                      setState(() {
-                        currentLeftScreen = 1;
-                        _screenSaverTimer?.cancel();
-                        _scrollToCurrentSong();
-                      });
-                    },
+                Text(
+                  _printDuration(_displayedPlaybackPosition),
+                  style: TextStyle(fontSize: s(16)),
+                ),
+                Expanded(
+                  child: Slider(
+                    value: _seekSliderValue,
+                    max: _totalDuration.inMilliseconds > 0
+                        ? _totalDuration.inMilliseconds.toDouble()
+                        : 1,
+                    activeColor: _lyricHighlightColor,
+                    onChangeStart: _onSeekStart,
+                    onChanged: _onSeekChanged,
+                    onChangeEnd: _onSeekEnd,
                   ),
                 ),
-                // Background → rotating cover → lyrics. Rotation stays in its own layer.
-                AnimatedPositioned(
-                  duration: layoutDuration,
-                  curve: Curves.easeInOut,
-                  right: horizontalPadding,
-                  bottom: _isLargeMode ? _stageSize(75) : _stageSize(225),
-                  width: discSize,
-                  height: discSize,
-                  child: IgnorePointer(
-                    ignoring: !_isLargeMode,
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 300),
-                      opacity: _isLargeMode ? 1.0 : 0.0,
-                      child: _buildSongDisc(
-                        diameter: discSize,
-                        holeDiameter: _stageSize(45),
-                        rotateWithPlayback: _isLargeMode,
+                Text(
+                  _printDuration(_totalDuration),
+                  style: TextStyle(fontSize: s(16)),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SizedBox(
+          height: buttonHeight,
+          child: Row(
+            children: [
+              for (final button in _transportButtons(iconSize))
+                Expanded(child: button),
+              if (compact)
+                Expanded(
+                  child: PopupMenuButton<int>(
+                    tooltip: '更多播放选项',
+                    padding: EdgeInsets.zero,
+                    icon: Icon(Icons.more_horiz, size: iconSize),
+                    onSelected: (index) => tools[index].action(),
+                    itemBuilder: (_) => [
+                      for (var index = 0; index < tools.length; index++)
+                        PopupMenuItem(
+                          value: index,
+                          child: Text(tools[index].label),
+                        ),
+                    ],
+                  ),
+                )
+              else
+                for (final tool in tools)
+                  Expanded(
+                    child: _transportButton(
+                      tool.icon,
+                      tool.label,
+                      tool.action,
+                      size: iconSize * .86,
+                    ),
+                  ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildQQMusicUnifiedStage() {
+    return LayoutBuilder(
+      builder: (context, bounds) {
+        final width = bounds.maxWidth;
+        final height = bounds.maxHeight;
+        final inset = min(_stageSize(30), width * .055);
+        final topBarHeight = min(_stageSize(49), height * .15);
+        final titleSize = min(
+          _stageSize(_isLargeMode ? 37 : 30),
+          height * .085,
+        );
+        final artistSize = min(_stageSize(18), height * .045);
+        final wideStage = width > height * 1.18;
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: inset),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      height: topBarHeight,
+                      child: Row(
+                        children: [
+                          _transportButton(
+                            Icons.arrow_back_ios_new,
+                            '返回歌单',
+                            () => unawaited(_openPlayingSongList()),
+                            size: min(_stageSize(25), topBarHeight * .62),
+                          ),
+                          if (_isLargeMode)
+                            TextButton.icon(
+                              icon: Icon(
+                                Icons.text_fields,
+                                size: min(_stageSize(20), topBarHeight * .55),
+                              ),
+                              label: Text(
+                                '显示调整',
+                                style: TextStyle(
+                                  fontSize: min(
+                                    _stageSize(16),
+                                    topBarHeight * .46,
+                                  ),
+                                ),
+                              ),
+                              onPressed: () {
+                                setState(
+                                  () => _showLargeDisplayControls =
+                                      !_showLargeDisplayControls,
+                                );
+                                if (!_showLargeDisplayControls)
+                                  unawaited(_saveLargeDisplaySettings());
+                              },
+                            ),
+                          const Spacer(),
+                          _transportButton(
+                            _isLargeMode
+                                ? Icons.fullscreen_exit
+                                : Icons.fullscreen,
+                            _isLargeMode ? '退出大屏' : '大屏歌词',
+                            _toggleLargeStage,
+                            size: min(_stageSize(27), topBarHeight * .62),
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                ),
-                AnimatedPositioned(
-                  duration: layoutDuration,
-                  curve: Curves.easeInOut,
-                  left: horizontalPadding,
-                  top: _isLargeMode ? _stageSize(75) : _stageSize(90),
-                  bottom: _isLargeMode ? _stageSize(30) : _stageSize(240),
-                  width: titlePanelWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (_isLargeMode)
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Expanded(child: songHeading),
-                            SizedBox(width: _stageSize(24)),
-                            ConstrainedBox(
-                              constraints: BoxConstraints(
-                                maxWidth: titlePanelWidth * 0.45,
-                              ),
-                              child: ValueListenableBuilder<String>(
-                                valueListenable: _clockText,
-                                builder: (context, time, _) => FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  alignment: Alignment.centerRight,
-                                  child: Text(time, style: clockStyle),
+                    Row(
+                      children: [
+                        if (!_isLargeMode && !_viewport.wide) ...[
+                          InkWell(
+                            onTap: _showCoverSelectionDialog,
+                            child: _buildSongDisc(
+                              diameter: min(s(56), height * .15),
+                              holeDiameter: min(s(13), height * .04),
+                              rotateWithPlayback: true,
+                            ),
+                          ),
+                          SizedBox(width: s(12)),
+                        ],
+                        Expanded(
+                          child: _songHeading(
+                            titleSize: titleSize,
+                            artistSize: artistSize,
+                          ),
+                        ),
+                        if (_isLargeMode) ...[
+                          SizedBox(width: _stageSize(10)),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: width * .41,
+                              maxHeight: height * .19,
+                            ),
+                            child: ValueListenableBuilder<String>(
+                              valueListenable: _clockText,
+                              builder: (_, time, _) => FittedBox(
+                                fit: BoxFit.scaleDown,
+                                alignment: Alignment.centerRight,
+                                child: Text(
+                                  time,
+                                  style: TextStyle(
+                                    fontSize: _stageSize(_largeClockFontSize),
+                                    height: 1,
+                                    fontWeight: FontWeight.w200,
+                                    color: Colors.black87,
+                                    fontFamily: 'monospace',
+                                  ),
                                 ),
                               ),
                             ),
-                          ],
-                        )
-                      else
-                        songHeading,
-                      SizedBox(height: _stageSize(15)),
-                      Expanded(
-                        child: _buildScrollingLyrics(context, isMini: false),
-                      ),
-                    ],
-                  ),
-                ),
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 400),
-                  curve: Curves.easeInOut,
-                  left: _stageSize(75),
-                  right: _stageSize(75),
-                  bottom: _isLargeMode ? _stageSize(-180) : _stageSize(30),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 300),
-                    opacity: _isLargeMode ? 0.0 : 1.0,
-                    child: Column(
-                      children: [
-                        ValueListenableBuilder<int>(
-                          valueListenable: _progressTick,
-                          builder: (context, _, _) => Row(
-                            children: [
-                              Text(
-                                _printDuration(_displayedPlaybackPosition),
-                                style: TextStyle(
-                                  color: Colors.black54,
-                                  fontSize: _stageSize(18),
-                                ),
-                              ),
-                              Expanded(
-                                child: Slider(
-                                  value: _seekSliderValue,
-                                  min: 0.0,
-                                  max: _totalDuration.inMilliseconds > 0
-                                      ? _totalDuration.inMilliseconds.toDouble()
-                                      : 1.0,
-                                  activeColor: Colors.black87,
-                                  inactiveColor: Colors.black12,
-                                  onChangeStart: _onSeekStart,
-                                  onChanged: _onSeekChanged,
-                                  onChangeEnd: _onSeekEnd,
-                                ),
-                              ),
-                              Text(
-                                _printDuration(_totalDuration),
-                                style: TextStyle(
-                                  color: Colors.black54,
-                                  fontSize: _stageSize(18),
-                                ),
-                              ),
-                            ],
                           ),
-                        ),
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              IconButton(
-                                icon: Icon(
-                                  _loopMode == 0
-                                      ? Icons.repeat
-                                      : (_loopMode == 1
-                                            ? Icons.repeat_one
-                                            : Icons.shuffle),
-                                ),
-                                iconSize: _stageSize(42) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: _toggleLoopMode,
-                              ),
-                              SizedBox(width: _stageSize(36)),
-                              IconButton(
-                                icon: const Icon(Icons.skip_previous),
-                                iconSize: _stageSize(64) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: () {
-                                  _resetScreenSaverTimer();
-                                  _playPrevSong();
-                                },
-                              ),
-                              SizedBox(width: _stageSize(24)),
-                              IconButton(
-                                icon: Icon(
-                                  isPlaying
-                                      ? Icons.pause_circle_filled
-                                      : Icons.play_circle_filled,
-                                ),
-                                iconSize: _stageSize(100) * _btnScale,
-                                color: _lyricHighlightColor,
-                                onPressed: () {
-                                  _resetScreenSaverTimer();
-                                  _togglePlayPause();
-                                },
-                              ),
-                              SizedBox(width: _stageSize(24)),
-                              IconButton(
-                                icon: const Icon(Icons.skip_next),
-                                iconSize: _stageSize(64) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: () {
-                                  _resetScreenSaverTimer();
-                                  _playNextSong(manual: true);
-                                },
-                              ),
-                              SizedBox(width: _stageSize(30)),
-                              IconButton(
-                                tooltip: '歌词选择',
-                                icon: _isRefreshingLyrics
-                                    ? SizedBox(
-                                        width: _stageSize(32),
-                                        height: _stageSize(32),
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: _stageSize(3),
-                                          color: Colors.black54,
-                                        ),
-                                      )
-                                    : Icon(
-                                        Icons.lyrics_outlined,
-                                        size: _stageSize(42) * _btnScale,
-                                      ),
-                                color: _lyricCandidates.length > 1
-                                    ? _lyricHighlightColor
-                                    : Colors.black87,
-                                onPressed: _showLyricSelectionDialog,
-                              ),
-                              IconButton(
-                                tooltip: '选择封面（也可长按圆盘）',
-                                icon: const Icon(Icons.image_search),
-                                iconSize: _stageSize(42) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: _showCoverSelectionDialog,
-                              ),
-                              SizedBox(width: _stageSize(18)),
-                              IconButton(
-                                icon: const Icon(Icons.timer),
-                                iconSize: _stageSize(42) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: () {
-                                  _resetScreenSaverTimer();
-                                  _showLyricOffsetDialog();
-                                },
-                              ),
-                              SizedBox(width: _stageSize(18)),
-                              IconButton(
-                                icon: const Icon(Icons.queue_music),
-                                iconSize: _stageSize(42) * _btnScale,
-                                color: Colors.black87,
-                                onPressed: () async {
-                                  if (playingAccount != null &&
-                                      !_sameAccount(
-                                        activeAccount,
-                                        playingAccount,
-                                      )) {
-                                    setState(() {
-                                      activeAccount = playingAccount;
-                                    });
-                                    await fetchSongsFromWebDav(silent: true);
-                                  }
-                                  if (!mounted) return;
-                                  setState(() {
-                                    currentLeftScreen = 1;
-                                    _isLargeMode = false;
-                                  });
-                                  _screenSaverTimer?.cancel();
-                                  Future.delayed(
-                                    const Duration(milliseconds: 300),
-                                    () {
-                                      if (mounted) _scrollToCurrentSong();
-                                    },
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
+                        ],
                       ],
                     ),
-                  ),
+                    SizedBox(height: min(_stageSize(8), height * .024)),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, area) {
+                          final disc = min(
+                            _stageSize(240),
+                            min(
+                              area.maxWidth * (wideStage ? .24 : .35),
+                              area.maxHeight * .48,
+                            ),
+                          );
+                          final bottom = min(
+                            _stageSize(40),
+                            area.maxHeight * .14,
+                          );
+                          final artBounds = Rect.fromLTWH(
+                            area.maxWidth - disc,
+                            area.maxHeight - bottom - disc,
+                            disc,
+                            disc,
+                          );
+                          return GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onTap: _toggleLargeStage,
+                            onLongPressStart: _isLargeMode
+                                ? (details) {
+                                    if (artBounds.contains(
+                                      details.localPosition,
+                                    ))
+                                      _showCoverSelectionDialog();
+                                  }
+                                : null,
+                            child: Stack(
+                              children: [
+                                if (_isLargeMode && disc > 0)
+                                  Positioned(
+                                    right: 0,
+                                    bottom: bottom,
+                                    child: IgnorePointer(
+                                      child: Opacity(
+                                        opacity: wideStage ? .72 : .42,
+                                        child: _buildSongDisc(
+                                          diameter: disc,
+                                          holeDiameter: disc * .19,
+                                          rotateWithPlayback: true,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                Positioned.fill(
+                                  child: SizedBox(
+                                    key: const ValueKey('stage-lyrics-pane'),
+                                    child: _buildScrollingLyrics(context),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    if (!_isLargeMode) _buildStageTransport(bounds),
+                  ],
                 ),
-                if (_isLargeMode)
-                  Positioned(
-                    left: _stageSize(92),
-                    top: _stageSize(24),
-                    child: TextButton.icon(
-                      icon: Icon(Icons.text_fields, size: s(24)),
-                      label: Text('显示调整', style: TextStyle(fontSize: s(17))),
-                      onPressed: () {
-                        setState(
-                          () => _showLargeDisplayControls =
-                              !_showLargeDisplayControls,
-                        );
-                        if (!_showLargeDisplayControls) {
-                          unawaited(_saveLargeDisplaySettings());
-                        }
-                      },
-                    ),
-                  ),
-                if (_isLargeMode && _showLargeDisplayControls)
-                  Positioned(
-                    right: s(18),
-                    bottom: s(18),
-                    width: min(s(380), max(0.0, constraints.maxWidth - s(36))),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxHeight: constraints.maxHeight * 0.65,
-                      ),
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () {},
-                        child: _buildLargeDisplayControls(),
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
-          );
-        },
-      ),
+            if (_isLargeMode && _showLargeDisplayControls)
+              Positioned(
+                right: inset,
+                bottom: min(s(16), height * .05),
+                width: min(s(380), max(0.0, width - inset * 2)),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: height * .65),
+                  child: _buildLargeDisplayControls(),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -10134,39 +10249,47 @@ class _MainHomeScreenState extends State<MainHomeScreen>
   Widget _buildDashboardCard({
     required String title,
     required String subtitle,
+    required double cardScale,
     required VoidCallback onTap,
   }) {
+    double size(double value) => s(value) * cardScale;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.55),
-          borderRadius: BorderRadius.circular(s(24)),
+          borderRadius: BorderRadius.circular(size(24)),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.04),
-              blurRadius: s(15),
-              offset: Offset(0, s(6)),
+              blurRadius: size(15),
+              offset: Offset(0, size(6)),
             ),
           ],
         ),
-        padding: EdgeInsets.all(s(24)),
+        padding: EdgeInsets.all(size(24)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
               title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: s(28),
+                fontSize: size(28),
                 fontWeight: FontWeight.bold,
                 color: Colors.black87,
               ),
             ),
-            SizedBox(height: s(8)),
-            Text(
-              subtitle,
-              style: TextStyle(fontSize: s(20), color: Colors.black54),
+            SizedBox(height: size(8)),
+            Flexible(
+              child: Text(
+                subtitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: size(20), color: Colors.black54),
+              ),
             ),
           ],
         ),
